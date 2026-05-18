@@ -1,0 +1,7 @@
+# P0 骨架依赖（保持精简，后续阶段再加 httpx / 各家 SDK 等）
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+Pillow==11.1.0
+httpx==0.28.1
+pyinstaller==6.11.1

@@ -1,0 +1,274 @@
+"""Agent 工具原语 + 作用域护栏。
+
+铁律：任何涉及路径的工具，路径解析后必须落在 settings 的 allowed_roots 内，
+否则直接拒绝执行（防目录穿越/越界）。只读工具自动执行；改动/命令类是高危，
+由上层会话在执行前向用户确认。
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
+
+from config import get_workspace, path_in_scope
+
+MAX_READ = 200_000  # 单文件读取上限，防爆上下文
+CMD_TIMEOUT = 120
+
+
+class ToolError(Exception):
+    pass
+
+
+def _safe(path: str) -> Path:
+    if not path:
+        raise ToolError("路径为空")
+    if not path_in_scope(path):
+        raise ToolError(
+            f"拒绝：路径越出授权白名单 → {path}（去设置页把它的根目录加入授权）"
+        )
+    return Path(path).resolve()
+
+
+def _cwd() -> str:
+    return get_workspace().get("cwd", "") or os.getcwd()
+
+
+# ---------- 只读 ----------
+
+def list_dir(path: str = ".") -> dict[str, Any]:
+    p = _safe(path if os.path.isabs(path) else os.path.join(_cwd(), path))
+    if not p.exists():
+        raise ToolError(f"不存在：{p}")
+    items = []
+    for e in sorted(p.iterdir()):
+        items.append(("dir " if e.is_dir() else "file") + e.name)
+    return {"path": str(p), "entries": items[:500]}
+
+
+def read_file(path: str) -> dict[str, Any]:
+    p = _safe(path if os.path.isabs(path) else os.path.join(_cwd(), path))
+    if not p.is_file():
+        raise ToolError(f"不是文件或不存在：{p}")
+    data = p.read_text(encoding="utf-8", errors="replace")
+    truncated = len(data) > MAX_READ
+    return {"path": str(p), "content": data[:MAX_READ],
+            "truncated": truncated}
+
+
+def search_text(query: str, path: str = ".",
+                exts: str = "") -> dict[str, Any]:
+    base = _safe(path if os.path.isabs(path) else os.path.join(_cwd(), path))
+    ext_set = {e.strip() for e in exts.split(",") if e.strip()}
+    hits = []
+    for root, _dirs, files in os.walk(base):
+        if any(s in root for s in (".git", "node_modules", ".venv")):
+            continue
+        for f in files:
+            if ext_set and Path(f).suffix.lstrip(".") not in ext_set:
+                continue
+            fp = Path(root) / f
+            try:
+                for i, line in enumerate(
+                    fp.read_text(encoding="utf-8", errors="ignore")
+                    .splitlines(), 1
+                ):
+                    if query in line:
+                        hits.append(f"{fp}:{i}: {line.strip()[:200]}")
+                        if len(hits) >= 200:
+                            return {"matches": hits, "truncated": True}
+            except OSError:
+                continue
+    return {"matches": hits, "truncated": False}
+
+
+# ---------- 改动（高危，需确认）----------
+
+def create_file(path: str, content: str = "") -> dict[str, Any]:
+    p = _safe(path if os.path.isabs(path) else os.path.join(_cwd(), path))
+    if p.exists():
+        raise ToolError(f"已存在，拒绝覆盖（用 write_file）：{p}")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return {"path": str(p), "created": True}
+
+
+def write_file(path: str, content: str) -> dict[str, Any]:
+    p = _safe(path if os.path.isabs(path) else os.path.join(_cwd(), path))
+    existed = p.exists()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return {"path": str(p), "overwritten": existed}
+
+
+def edit_file(path: str, old: str, new: str) -> dict[str, Any]:
+    p = _safe(path if os.path.isabs(path) else os.path.join(_cwd(), path))
+    if not p.is_file():
+        raise ToolError(f"不是文件：{p}")
+    text = p.read_text(encoding="utf-8")
+    n = text.count(old)
+    if n == 0:
+        raise ToolError("未找到要替换的 old 文本（需逐字精确匹配）")
+    if n > 1:
+        raise ToolError(f"old 文本出现 {n} 次不唯一，请给更长的上下文")
+    p.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return {"path": str(p), "replaced": True}
+
+
+def delete_path(path: str) -> dict[str, Any]:
+    p = _safe(path if os.path.isabs(path) else os.path.join(_cwd(), path))
+    if not p.exists():
+        raise ToolError(f"不存在：{p}")
+    if p.is_dir():
+        shutil.rmtree(p)
+    else:
+        p.unlink()
+    return {"path": str(p), "deleted": True}
+
+
+def run_command(command: str) -> dict[str, Any]:
+    cwd = _cwd()
+    if not path_in_scope(cwd):
+        raise ToolError("当前工作目录不在授权白名单内")
+    try:
+        r = subprocess.run(
+            command, shell=True, cwd=cwd, capture_output=True,
+            text=True, timeout=CMD_TIMEOUT, errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        raise ToolError(f"命令超时（>{CMD_TIMEOUT}s）")
+    out = (r.stdout or "")[-8000:]
+    err = (r.stderr or "")[-4000:]
+    return {"exit_code": r.returncode, "stdout": out, "stderr": err}
+
+
+# ---------- Git 安全网 ----------
+
+def _git(args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args], cwd=_cwd(), capture_output=True, text=True,
+        timeout=60, errors="replace",
+    )
+
+
+def git_checkpoint(message: str = "ai-helper checkpoint") -> dict[str, Any]:
+    cwd = _cwd()
+    if not path_in_scope(cwd):
+        raise ToolError("工作目录不在授权白名单内")
+    if not (Path(cwd) / ".git").exists():
+        raise ToolError("当前工作目录不是 git 仓库（可先 git init）")
+    _git(["add", "-A"])
+    head_before = _git(["rev-parse", "HEAD"]).stdout.strip()
+    c = _git(["commit", "-m", message, "--allow-empty"])
+    head = _git(["rev-parse", "HEAD"]).stdout.strip()
+    return {"checkpoint": head, "prev": head_before,
+            "info": c.stdout.strip() or c.stderr.strip()}
+
+
+def git_rollback(to: str) -> dict[str, Any]:
+    if not to:
+        raise ToolError("缺少回滚目标 commit")
+    r = _git(["reset", "--hard", to])
+    if r.returncode != 0:
+        raise ToolError(f"回滚失败：{r.stderr.strip()}")
+    return {"rolled_back_to": to, "info": r.stdout.strip()}
+
+
+def git_init(path: str) -> dict[str, Any]:
+    p = _safe(path)
+    if not p.is_dir():
+        raise ToolError(f"不是目录：{p}")
+    if (p / ".git").exists():
+        return {"path": str(p), "already_git": True}
+    r = subprocess.run(["git", "init"], cwd=str(p), capture_output=True,
+                        text=True, timeout=30)
+    if r.returncode != 0:
+        raise ToolError(f"git init 失败：{r.stderr.strip()}")
+    return {"path": str(p), "initialized": True}
+
+
+def run_tests() -> dict[str, Any]:
+    cmd = get_workspace().get("test_cmd", "").strip()
+    if not cmd:
+        return {"skipped": True, "reason": "未配置测试命令（设置页可配）"}
+    return {"test_cmd": cmd, **run_command(cmd)}
+
+
+# name -> (handler, high_risk 需用户确认)
+REGISTRY: dict[str, tuple[Any, bool]] = {
+    "list_dir": (list_dir, False),
+    "read_file": (read_file, False),
+    "search_text": (search_text, False),
+    "create_file": (create_file, True),
+    "write_file": (write_file, True),
+    "edit_file": (edit_file, True),
+    "delete_path": (delete_path, True),
+    "run_command": (run_command, True),
+    "git_checkpoint": (git_checkpoint, False),
+    "git_rollback": (git_rollback, True),
+    "run_tests": (run_tests, False),
+}
+
+
+def is_high_risk(name: str) -> bool:
+    return REGISTRY.get(name, (None, True))[1]
+
+
+def run_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    if name not in REGISTRY:
+        return {"error": f"未知工具：{name}"}
+    fn = REGISTRY[name][0]
+    try:
+        return fn(**(args or {}))
+    except ToolError as e:
+        return {"error": str(e)}
+    except TypeError as e:
+        return {"error": f"参数错误：{e}"}
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"执行失败：{e}"}
+
+
+# 给模型的工具 schema（OpenAI function-calling 格式）
+def tool_specs() -> list[dict[str, Any]]:
+    S = "string"
+
+    def fn(name, desc, props, req):
+        return {
+            "type": "function",
+            "function": {
+                "name": name, "description": desc,
+                "parameters": {
+                    "type": "object", "properties": props,
+                    "required": req,
+                },
+            },
+        }
+
+    return [
+        fn("list_dir", "列目录", {"path": {"type": S}}, []),
+        fn("read_file", "读文件", {"path": {"type": S}}, ["path"]),
+        fn("search_text", "在目录内搜文本",
+           {"query": {"type": S}, "path": {"type": S},
+            "exts": {"type": S, "description": "逗号分隔扩展名,可空"}},
+           ["query"]),
+        fn("create_file", "新建文件(不存在才行)",
+           {"path": {"type": S}, "content": {"type": S}}, ["path"]),
+        fn("write_file", "写/覆盖文件",
+           {"path": {"type": S}, "content": {"type": S}},
+           ["path", "content"]),
+        fn("edit_file", "精确替换文件中一段文本(old须唯一)",
+           {"path": {"type": S}, "old": {"type": S}, "new": {"type": S}},
+           ["path", "old", "new"]),
+        fn("delete_path", "删除文件或目录", {"path": {"type": S}},
+           ["path"]),
+        fn("run_command", "在工作目录执行 shell 命令",
+           {"command": {"type": S}}, ["command"]),
+        fn("git_checkpoint", "提交一个 git 检查点",
+           {"message": {"type": S}}, []),
+        fn("git_rollback", "git reset --hard 到指定 commit",
+           {"to": {"type": S}}, ["to"]),
+        fn("run_tests", "运行配置的测试命令", {}, []),
+    ]

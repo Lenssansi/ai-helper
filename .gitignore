@@ -1,0 +1,62 @@
+# 私密 / 凭证：绝不上传
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.pfx
+*secret*
+*credentials*
+id_rsa
+id_rsa.*
+# settings.json(含远程令牌)、API 密钥等本地数据
+data/
+
+# Python 后端
+backend/.venv/
+# PyInstaller 中间产物 / 冻结出的后端 exe
+backend/build/
+backend/dist/
+*.spec
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 前端 / Electron
+node_modules/
+app/node_modules/
+app/dist/
+app/dist_electron/
+app/release/
+# electron-builder 安装包产物（在项目根，自行分享，不进库）
+/release/
+release/
+dist/
+build/
+
+# vendored 上游 skills（设置页可一键重新克隆，不进本仓）
+skills/
+
+# Ollama 程序/模型若迁到项目内，绝不上传（数 GB，含 junction）
+ollama/
+
+# 本地模型权重（兜底）
+*.gguf
+*.bin
+*.safetensors
+
+# 日志 / 临时
+*.log
+.tmp/
+
+# 本机 Windows 脚本（开发启动/打包/建快捷方式）——仅本地用，不进库
+*.bat
+
+# 系统垃圾
+Thumbs.db
+.DS_Store
+
+# 注：assets/ 下的 robot.png / icon.ico / 夏莱.png 是程序图标资源，
+# 体积小且程序需要，保留上传，不在忽略之列。

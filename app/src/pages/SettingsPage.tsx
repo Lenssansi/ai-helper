@@ -1,0 +1,690 @@
+import { useEffect, useState } from "react";
+import {
+  getBrain,
+  getOllamaStatus,
+  getSystemPrompt,
+  getGithub,
+  getSkills,
+  getWorkspace,
+  githubGenDoc,
+  githubPreview,
+  githubSaveDoc,
+  githubUpload,
+  gitInitWorkspace,
+  saveGithub,
+  saveBrain,
+  saveWorkspace,
+  setSkills,
+  updateSkills,
+  setSystemPrompt as apiSetSysPrompt,
+  setTheme as apiSetTheme,
+  type BrainCfg,
+  type OllamaStatus,
+  type ThemeMode,
+  type GithubPreview,
+  type GithubStatus,
+  type SkillsStatus,
+  type WhoAmI,
+  type WorkspaceCfg,
+} from "../api";
+
+const THEMES: { v: ThemeMode; label: string }[] = [
+  { v: "dark", label: "暗色" },
+  { v: "light", label: "亮色" },
+  { v: "system", label: "跟随系统" },
+];
+
+export default function SettingsPage({
+  who,
+  theme,
+  onTheme,
+}: {
+  who: WhoAmI | null;
+  theme: ThemeMode;
+  onTheme: (t: ThemeMode) => void;
+}) {
+  const canSettings = who ? who.permissions.settings !== false : true;
+  const [msg, setMsg] = useState("");
+  const [sys, setSys] = useState("");
+  const [sysMsg, setSysMsg] = useState("");
+
+  const [ost, setOst] = useState<OllamaStatus | null>(null);
+  const [oBase, setOBase] = useState("");
+  const [oModel, setOModel] = useState("");
+  const [brain, setBrain] = useState<BrainCfg | null>(null);
+  const [bMsg, setBMsg] = useState("");
+
+  const [wsc, setWsc] = useState<WorkspaceCfg | null>(null);
+  const [newRoot, setNewRoot] = useState("");
+  const [wsMsg, setWsMsg] = useState("");
+
+  const [sk, setSk] = useState<SkillsStatus | null>(null);
+  const [skMsg, setSkMsg] = useState("");
+
+  const [gh, setGh] = useState<GithubStatus | null>(null);
+  const [ghUser, setGhUser] = useState("");
+  const [ghToken, setGhToken] = useState("");
+  const [upPath, setUpPath] = useState("");
+  const [upRepo, setUpRepo] = useState("");
+  const [upPriv, setUpPriv] = useState(true);
+  const [docDraft, setDocDraft] = useState("");
+  const [ghPrev, setGhPrev] = useState<GithubPreview | null>(null);
+  const [ghMsg, setGhMsg] = useState("");
+
+  async function refreshOllama() {
+    try {
+      const s = await getOllamaStatus();
+      setOst(s);
+      setOBase(s.config.base_url);
+      setOModel(s.config.model);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  useEffect(() => {
+    getSystemPrompt()
+      .then((r) => setSys(r.system_prompt))
+      .catch(() => void 0);
+    getBrain()
+      .then((r) => setBrain(r.brain))
+      .catch(() => void 0);
+    getWorkspace()
+      .then(setWsc)
+      .catch(() => void 0);
+    getSkills()
+      .then(setSk)
+      .catch(() => void 0);
+    getGithub()
+      .then((g) => {
+        setGh(g);
+        setGhUser(g.username);
+        setUpPath((cur) => cur || g.project_root || "");
+        setUpRepo((cur) => cur || "ai-helper");
+      })
+      .catch(() => void 0);
+    getWorkspace()
+      .then((w) => setUpPath((cur) => cur || w.cwd || ""))
+      .catch(() => void 0);
+    refreshOllama();
+  }, []);
+
+  async function saveWs(next: Partial<WorkspaceCfg>) {
+    setWsMsg("");
+    try {
+      setWsc(await saveWorkspace(next));
+      setWsMsg("已保存");
+    } catch {
+      setWsMsg("保存失败（远程不可改设置，仅本机可改）");
+    }
+  }
+
+  async function pick(t: ThemeMode) {
+    onTheme(t);
+    try {
+      await apiSetTheme(t);
+      setMsg("已保存");
+    } catch {
+      setMsg("未持久化（远程不可改设置，仅本次会话生效）");
+    }
+  }
+
+  async function saveSys() {
+    setSysMsg("");
+    try {
+      await apiSetSysPrompt(sys);
+      setSysMsg("已保存，对所有对话/所有 API 生效");
+    } catch {
+      setSysMsg("保存失败（远程不可改设置，仅本机可改）");
+    }
+  }
+
+  async function saveB(next: Partial<BrainCfg>, ollama?: boolean) {
+    setBMsg("");
+    try {
+      const r = await saveBrain({
+        brain: next,
+        ollama: ollama ? { base_url: oBase, model: oModel } : undefined,
+      });
+      setBrain(r.brain);
+      setBMsg("已保存");
+      if (ollama) refreshOllama();
+    } catch {
+      setBMsg("保存失败（远程不可改设置，仅本机可改）");
+    }
+  }
+
+  const tog = (k: keyof BrainCfg) =>
+    brain && saveB({ [k]: !brain[k] } as Partial<BrainCfg>);
+
+  return (
+    <div className="page">
+      <h1>设置</h1>
+
+      <section className="set-block">
+        <div className="set-title">主题</div>
+        <div className="seg">
+          {THEMES.map((t) => (
+            <button
+              key={t.v}
+              className={"seg-btn" + (theme === t.v ? " on" : "")}
+              onClick={() => pick(t.v)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {!canSettings && (
+          <div className="cfg-note warn">
+            远程访问下设置不持久化（防止远程自我解锁），仅本次会话生效。
+          </div>
+        )}
+        <div className="cfg-msg">{msg}</div>
+        <div className="muted" style={{ marginTop: 8 }}>
+          注：代码高亮配色暂固定深色,亮色主题下代码块仍偏深,后续再适配。
+        </div>
+      </section>
+
+      <section className="set-block">
+        <div className="set-title">
+          本地模型 (Ollama){" "}
+          <span
+            className={
+              "dot " +
+              (ost === null ? "wait" : ost.reachable ? "ok" : "err")
+            }
+          />
+          {ost === null
+            ? "检测中…"
+            : ost.reachable
+            ? "在线"
+            : "离线（请确认 Ollama 已启动）"}
+        </div>
+        <label>
+          Ollama 地址
+          <input
+            value={oBase}
+            disabled={!canSettings}
+            onChange={(e) => setOBase(e.target.value)}
+            placeholder="http://localhost:11434"
+          />
+        </label>
+        <label>
+          模型
+          {ost && ost.models.length ? (
+            <select
+              value={oModel}
+              disabled={!canSettings}
+              onChange={(e) => setOModel(e.target.value)}
+            >
+              {ost.models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={oModel}
+              disabled={!canSettings}
+              onChange={(e) => setOModel(e.target.value)}
+              placeholder="qwen2.5:3b"
+            />
+          )}
+        </label>
+        {canSettings && (
+          <div className="cfg-actions">
+            <button onClick={() => saveB({}, true)}>保存并测试连接</button>
+            <button onClick={refreshOllama}>刷新状态</button>
+            <span className="cfg-msg">{bMsg}</span>
+          </div>
+        )}
+      </section>
+
+      <section className="set-block">
+        <div className="set-title">本地模型职责</div>
+        {brain ? (
+          <div className="toggles">
+            <Toggle
+              on={brain.auto_route}
+              label="自动任务路由（本地模型按各 API「擅长描述」选最合适的）"
+              onClick={() => tog("auto_route")}
+              disabled={!canSettings}
+            />
+            <Toggle
+              on={brain.local_answer}
+              label="琐碎问题本地直答（省云端额度）"
+              onClick={() => tog("local_answer")}
+              disabled={!canSettings}
+            />
+            <Toggle
+              on={brain.summary}
+              label="长对话滚动摘要（防超上下文）"
+              onClick={() => tog("summary")}
+              disabled={!canSettings}
+            />
+            <div className="muted" style={{ marginTop: 6 }}>
+              关掉「自动路由」则始终用对话页手动选的 API。
+            </div>
+          </div>
+        ) : (
+          <div className="muted">加载中…</div>
+        )}
+      </section>
+
+      <section className="set-block">
+        <div className="set-title">编程 Agent 工作区</div>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          Agent 只能在「授权根目录」内读写，越界硬禁止。当前工作目录须是其中
+          某个目录、且为 git 仓库（用于检查点/回滚）。
+        </div>
+        <div className="muted">授权根目录白名单：</div>
+        <div className="toggles" style={{ margin: "6px 0" }}>
+          {wsc?.allowed_roots.length ? (
+            wsc.allowed_roots.map((r) => (
+              <div key={r} className="preset-row">
+                <input value={r} readOnly />
+                <button
+                  className="danger"
+                  disabled={!canSettings}
+                  onClick={() =>
+                    saveWs({
+                      allowed_roots: wsc.allowed_roots.filter(
+                        (x) => x !== r
+                      ),
+                    })
+                  }
+                >
+                  ×
+                </button>
+              </div>
+            ))
+          ) : (
+            <div className="muted">（空——Agent 现在不能动任何目录）</div>
+          )}
+        </div>
+        {canSettings && (
+          <div className="preset-row">
+            <input
+              value={newRoot}
+              onChange={(e) => setNewRoot(e.target.value)}
+              placeholder="项目目录的完整路径（一个允许 Agent 操作的根目录）"
+            />
+            <button
+              onClick={() => {
+                if (!newRoot.trim()) return;
+                saveWs({
+                  allowed_roots: [
+                    ...(wsc?.allowed_roots ?? []),
+                    newRoot.trim(),
+                  ],
+                });
+                setNewRoot("");
+              }}
+            >
+              ＋ 加
+            </button>
+          </div>
+        )}
+        <label>
+          当前工作目录（从白名单选）
+          <select
+            value={wsc?.cwd ?? ""}
+            disabled={!canSettings}
+            onChange={(e) => saveWs({ cwd: e.target.value })}
+          >
+            {(wsc?.allowed_roots ?? []).map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="muted">
+          git 仓库：
+          {wsc?.cwd_is_git ? (
+            <span style={{ color: "var(--ok)" }}> 是 ✓</span>
+          ) : (
+            <>
+              <span style={{ color: "var(--warn)" }}> 否</span>
+              {canSettings && (
+                <button
+                  className="mini"
+                  onClick={async () => {
+                    if (!wsc?.cwd) return;
+                    try {
+                      await gitInitWorkspace(wsc.cwd);
+                      setWsc(await getWorkspace());
+                      setWsMsg("已初始化为 git 仓库");
+                    } catch (e) {
+                      setWsMsg((e as Error).message);
+                    }
+                  }}
+                >
+                  初始化为 git 仓库
+                </button>
+              )}
+            </>
+          )}
+        </div>
+        <label>
+          测试命令（改动后自动跑，失败可一键回滚；留空则跳过）
+          <input
+            value={wsc?.test_cmd ?? ""}
+            disabled={!canSettings}
+            onChange={(e) =>
+              setWsc(wsc ? { ...wsc, test_cmd: e.target.value } : wsc)
+            }
+            onBlur={() => wsc && saveWs({ test_cmd: wsc.test_cmd })}
+            placeholder="如 pytest -q / npm test"
+          />
+        </label>
+        <div className="cfg-msg">{wsMsg}</div>
+      </section>
+
+      <section className="set-block">
+        <div className="set-title">编程 skills（仅「编程」页生效）</div>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          来自 mattpocock/skills 的工程实践，含「需求盘问」——开启后编程
+          Agent 动手前会先追问澄清不清的需求，避免瞎猜生成错代码。
+          只注入到「编程」页，普通对话/文件模式不受影响。
+        </div>
+        {sk && (
+          <div className="toggles">
+            <Toggle
+              on={sk.enabled}
+              label={`启用工程 skills（已克隆 ${sk.count} 个，含 ${
+                sk.skills.includes("grill-with-docs")
+                  ? "grill-with-docs 盘问"
+                  : "工程指南"
+              }）`}
+              disabled={!canSettings}
+              onClick={async () => {
+                try {
+                  setSk(await setSkills(!sk.enabled));
+                } catch {
+                  setSkMsg("保存失败（远程不可改）");
+                }
+              }}
+            />
+            {!sk.cloned && (
+              <div className="cfg-note warn">
+                未检测到 skills 仓库，点下方「更新」克隆。
+              </div>
+            )}
+            {canSettings && (
+              <div className="cfg-actions" style={{ marginTop: 6 }}>
+                <button
+                  onClick={async () => {
+                    setSkMsg("更新中…");
+                    try {
+                      setSk(await updateSkills());
+                      setSkMsg("已更新到最新");
+                    } catch (e) {
+                      setSkMsg((e as Error).message);
+                    }
+                  }}
+                >
+                  更新 skills（重新克隆上游）
+                </button>
+                <span className="cfg-msg">{skMsg}</span>
+              </div>
+            )}
+            <div className="muted" style={{ marginTop: 6 }}>
+              已加载：{sk.skills.join("、") || "（无）"}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="set-block">
+        <div className="set-title">全局系统提示词</div>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          作为 system 消息自动加到每次对话最前面，对所有对话、所有 API
+          生效。留空则不加。
+        </div>
+        <textarea
+          className="sys-area"
+          value={sys}
+          disabled={!canSettings}
+          onChange={(e) => setSys(e.target.value)}
+          placeholder="例：你是一个简洁、直接的中文助手……"
+        />
+        {canSettings && (
+          <div className="cfg-actions" style={{ marginTop: 8 }}>
+            <button onClick={saveSys}>保存</button>
+            <span className="cfg-msg">{sysMsg}</span>
+          </div>
+        )}
+      </section>
+
+      {gh?.dev !== false && (
+      <section className="set-block">
+        <div className="set-title">上传到 GitHub（仅本机·开发版）</div>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          建 Token：GitHub → 右上头像 → Settings → Developer settings →
+          Personal access tokens → Tokens (classic) → Generate new
+          token，勾选 <b>repo</b> 权限，生成后复制。Token 只存本机
+          data/（已 gitignore）。仓库不用先建，向导会帮你建。
+        </div>
+        <label>
+          GitHub 用户名
+          <input
+            value={ghUser}
+            disabled={!canSettings}
+            onChange={(e) => setGhUser(e.target.value)}
+            placeholder="your-name"
+          />
+        </label>
+        <label>
+          Personal Access Token
+          <input
+            type="password"
+            value={ghToken}
+            disabled={!canSettings}
+            onChange={(e) => setGhToken(e.target.value)}
+            placeholder={gh?.has_token ? "已配置（留空=不改）" : "ghp_..."}
+          />
+        </label>
+        {canSettings && (
+          <div className="cfg-actions">
+            <button
+              onClick={async () => {
+                try {
+                  setGh(
+                    await saveGithub({
+                      token: ghToken.trim() || undefined,
+                      username: ghUser.trim(),
+                    })
+                  );
+                  setGhToken("");
+                  setGhMsg("已保存");
+                } catch {
+                  setGhMsg("保存失败（仅本机可配）");
+                }
+              }}
+            >
+              保存账号
+            </button>
+            <span className="cfg-msg">{ghMsg}</span>
+          </div>
+        )}
+
+        <div className="set-title" style={{ marginTop: 14 }}>
+          上传一个项目
+        </div>
+        <div className="muted" style={{ marginBottom: 6 }}>
+          统一方式：从授权白名单选要上传的项目目录（ai-helper 自己的根
+          目录默认也在白名单里，选它即上传本程序，与别的项目一视同仁）。
+        </div>
+        <label>
+          项目目录（授权白名单）
+          <select
+            value={upPath}
+            disabled={!canSettings}
+            onChange={(e) => {
+              setUpPath(e.target.value);
+              setGhPrev(null);
+            }}
+          >
+            {(wsc?.allowed_roots ?? []).map((r) => (
+              <option key={r} value={r}>
+                {r}
+                {gh && r === gh.project_root ? "  ← 本程序" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          仓库名
+          <input
+            value={upRepo}
+            disabled={!canSettings}
+            onChange={(e) => setUpRepo(e.target.value)}
+            placeholder="my-project / ai-helper"
+          />
+        </label>
+        <Toggle
+          on={upPriv}
+          label="私有仓库（推荐）"
+          disabled={!canSettings}
+          onClick={() => setUpPriv((v) => !v)}
+        />
+        <div className="muted" style={{ marginTop: 4 }}>
+          只上传/更新【源码 + 说明文档】，不含安装包。安装包请自己跑
+          根目录的 <b>打包.bat</b>（产物在项目根 <b>release/</b>，自行分享）。
+        </div>
+        <div className="cfg-actions" style={{ marginTop: 8 }}>
+          <button
+            disabled={!canSettings}
+            onClick={async () => {
+              setGhMsg("AI 生成说明文档中…");
+              try {
+                const r = await githubGenDoc(upPath.trim());
+                setDocDraft(r.doc);
+                setGhMsg("说明文档已生成，请审核修改后写入");
+              } catch (e) {
+                setGhMsg((e as Error).message);
+              }
+            }}
+          >
+            AI 生成说明文档（项目描述）
+          </button>
+          {docDraft && (
+            <button
+              disabled={!canSettings}
+              onClick={async () => {
+                try {
+                  await githubSaveDoc(upPath.trim(), docDraft);
+                  setGhMsg("已写入项目 说明文档.md（随上传进库）");
+                } catch (e) {
+                  setGhMsg((e as Error).message);
+                }
+              }}
+            >
+              确认写入项目
+            </button>
+          )}
+        </div>
+        {docDraft && (
+          <textarea
+            className="sys-area"
+            value={docDraft}
+            onChange={(e) => setDocDraft(e.target.value)}
+            style={{ minHeight: 160 }}
+          />
+        )}
+        {canSettings && (
+          <div className="cfg-actions" style={{ marginTop: 8 }}>
+            <button
+              onClick={async () => {
+                setGhMsg("生成预览中…");
+                setGhPrev(null);
+                try {
+                  setGhPrev(await githubPreview(upPath.trim()));
+                  setGhMsg("");
+                } catch (e) {
+                  setGhMsg((e as Error).message);
+                }
+              }}
+            >
+              预览（看将上传/将排除）
+            </button>
+            {ghPrev && (
+              <button
+                onClick={async () => {
+                  if (
+                    !confirm(
+                      `将把 ${ghPrev.will_count} 个文件(源码+说明文档)推送` +
+                        `到仓库 ${upRepo}（${
+                          upPriv ? "私有" : "公开"
+                        }）。继续？`
+                    )
+                  )
+                    return;
+                  setGhMsg("上传中…");
+                  try {
+                    const r = await githubUpload(
+                      upPath.trim(),
+                      upRepo.trim(),
+                      upPriv
+                    );
+                    setGhMsg("已上传：" + r.repo_url);
+                  } catch (e) {
+                    setGhMsg((e as Error).message);
+                  }
+                }}
+              >
+                确认上传
+              </button>
+            )}
+            <span className="cfg-msg">{ghMsg}</span>
+          </div>
+        )}
+        {ghPrev && (
+          <div className="placeholder" style={{ textAlign: "left" }}>
+            <div>
+              将上传 <b>{ghPrev.will_count}</b> 个文件
+              {ghPrev.gitignore_added.length > 0 &&
+                "；已自动写入 .gitignore：" +
+                  ghPrev.gitignore_added.join(" ")}
+            </div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              强制排除（不传密钥/隐私/大文件）：
+              {ghPrev.forced_excludes.join(" ")}
+            </div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              示例：
+              {ghPrev.will_upload.slice(0, 30).join(" ｜ ") || "（无）"}
+              {ghPrev.will_count > 30 ? " …" : ""}
+            </div>
+          </div>
+        )}
+      </section>
+      )}
+    </div>
+  );
+}
+
+function Toggle({
+  on,
+  label,
+  onClick,
+  disabled,
+}: {
+  on: boolean;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      className={"tg" + (on ? " on" : "")}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      <span className="tg-knob" />
+      {label}
+    </button>
+  );
+}

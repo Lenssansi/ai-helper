@@ -1,0 +1,158 @@
+// Electron 主进程：唯一可见窗口。启动时隐藏拉起 后端 + Vite + Ollama，
+// 就绪后开窗；退出时只杀「自己拉起的」。开发模式不变（源码即时改、
+// Vite 热更新），但不再有任何 cmd 黑窗。
+const { app, BrowserWindow, nativeTheme, ipcMain } = require("electron");
+const path = require("path");
+const http = require("http");
+const fs = require("fs");
+const { spawn } = require("child_process");
+
+const PACKED = app.isPackaged;
+const ROOT = path.join(__dirname, "..", ".."); // dev: D:\ai-helper
+const APP_DIR = path.join(ROOT, "app");
+const BACKEND_DIR = path.join(ROOT, "backend");
+const PY = path.join(BACKEND_DIR, ".venv", "Scripts", "python.exe");
+const VITE_JS = path.join(APP_DIR, "node_modules", "vite", "bin", "vite.js");
+// 打包后：后端是 PyInstaller 冻结的单 exe，放在 resources/backend/
+const BACKEND_EXE = process.resourcesPath
+  ? path.join(process.resourcesPath, "backend", "ai-helper-backend.exe")
+  : "";
+const MODELS_DIR = path.join(ROOT, "ollama", "models");
+const DEV_URL = "http://127.0.0.1:5173";
+
+let ollamaProc = null;
+let backendProc = null;
+let viteProc = null;
+
+function httpOk(url, timeout = 1500) {
+  return new Promise((resolve) => {
+    const req = http.get(url, { timeout }, (res) => {
+      res.resume();
+      resolve(res.statusCode > 0);
+    });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+async function waitUntil(fn, tries = 60, gap = 700) {
+  for (let i = 0; i < tries; i++) {
+    if (await fn()) return true;
+    await new Promise((r) => setTimeout(r, gap));
+  }
+  return false;
+}
+
+async function ensureOllama() {
+  if (await httpOk("http://127.0.0.1:11434/api/tags")) return;
+  try {
+    fs.mkdirSync(MODELS_DIR, { recursive: true });
+  } catch {
+    /* ignore */
+  }
+  try {
+    ollamaProc = spawn("ollama", ["serve"], {
+      shell: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: { ...process.env, OLLAMA_MODELS: MODELS_DIR },
+    });
+    ollamaProc.on("error", () => (ollamaProc = null));
+  } catch {
+    ollamaProc = null;
+  }
+}
+
+async function ensureBackend() {
+  if (await httpOk("http://127.0.0.1:8756/api/health")) return;
+  if (PACKED) {
+    if (!fs.existsSync(BACKEND_EXE)) return;
+    backendProc = spawn(BACKEND_EXE, [], {
+      cwd: path.dirname(BACKEND_EXE),
+      stdio: "ignore",
+      windowsHide: true,
+    });
+  } else {
+    if (!fs.existsSync(PY)) return; // 没装依赖：前端显示后端未连接
+    backendProc = spawn(PY, ["main.py"], {
+      cwd: BACKEND_DIR,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+  }
+  backendProc.on("error", () => (backendProc = null));
+}
+
+async function ensureVite() {
+  if (PACKED) return; // 打包后用构建产物 dist，不需要 Vite
+  if (await httpOk(DEV_URL)) return;
+  if (!fs.existsSync(VITE_JS)) return;
+  viteProc = spawn(process.execPath, [VITE_JS], {
+    cwd: APP_DIR,
+    stdio: "ignore",
+    windowsHide: true,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+  });
+  viteProc.on("error", () => (viteProc = null));
+}
+
+function killOurs() {
+  for (const p of [backendProc, viteProc, ollamaProc]) {
+    if (p) {
+      try {
+        p.kill();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  backendProc = viteProc = ollamaProc = null;
+}
+
+nativeTheme.themeSource = "system";
+ipcMain.on("set-native-theme", (_e, t) => {
+  if (t === "dark" || t === "light" || t === "system")
+    nativeTheme.themeSource = t;
+});
+
+function createWindow() {
+  const win = new BrowserWindow({
+    width: 1180,
+    height: 780,
+    minWidth: 900,
+    minHeight: 600,
+    title: "ai-helper",
+    icon: path.join(ROOT, "assets", "icon.ico"),
+    backgroundColor: "#0f1115",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  win.removeMenu();
+  if (PACKED) {
+    win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+  } else {
+    win.loadURL(DEV_URL);
+  }
+}
+
+app.whenReady().then(async () => {
+  await Promise.all([ensureOllama(), ensureBackend(), ensureVite()]);
+  // 打包：等后端就绪；开发：等 Vite 就绪。再开窗，避免白屏。
+  if (PACKED) await waitUntil(() => httpOk("http://127.0.0.1:8756/api/health"));
+  else await waitUntil(() => httpOk(DEV_URL));
+  createWindow();
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+app.on("before-quit", killOurs);
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});
