@@ -38,9 +38,29 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
     listAgentSessions().then(setSessions).catch(() => void 0);
   }
   useEffect(() => {
-    getWorkspace().then(setWs).catch(() => void 0);
-    getProviders().then(setPs).catch(() => void 0);
-    refreshSessions();
+    (async () => {
+      getProviders().then(setPs).catch(() => void 0);
+      let cwd = "";
+      try {
+        const w = await getWorkspace();
+        setWs(w);
+        cwd = w.cwd || "";
+      } catch {
+        /* ignore */
+      }
+      try {
+        const list = await listAgentSessions();
+        setSessions(list);
+        // 返回编程页时自动载回上次会话（优先当前工作目录的最近一个）
+        if (!runIdRef.current && list.length) {
+          const mine = list.filter((s) => s.cwd === cwd);
+          const pick = (mine.length ? mine : list)[0];
+          if (pick) loadSession(pick.id);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
   }, []);
 
   async function loadSession(id: string) {

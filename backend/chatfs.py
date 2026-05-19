@@ -22,6 +22,16 @@ class FsError(Exception):
     pass
 
 
+def _decode(b: bytes) -> str:
+    """中文 Windows 上很多文件是 GBK/GB18030，先 utf-8 再回退，消除乱码。"""
+    for enc in ("utf-8", "gb18030", "utf-16"):
+        try:
+            return b.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return b.decode("latin-1", "replace")
+
+
 def _p(path: str, base: str) -> Path:
     if not path:
         raise FsError("路径为空")
@@ -29,6 +39,12 @@ def _p(path: str, base: str) -> Path:
     if not p.is_absolute():
         p = Path(base or os.getcwd()) / p
     return p.resolve()
+
+
+def user_dirs(base: str = "") -> dict[str, Any]:  # noqa: ARG001
+    """返回本机真实 用户名/主目录/桌面/下载/文档 绝对路径（只读）。"""
+    import userdirs
+    return userdirs.user_dirs()
 
 
 def list_dir(path: str = ".", base: str = "") -> dict[str, Any]:
@@ -46,7 +62,7 @@ def read_file(path: str, base: str = "") -> dict[str, Any]:
     f = _p(path, base)
     if not f.is_file():
         raise FsError(f"不是文件或不存在：{f}")
-    t = f.read_text(encoding="utf-8", errors="replace")
+    t = _decode(f.read_bytes())
     return {"path": str(f), "content": t[:MAX_READ],
             "truncated": len(t) > MAX_READ}
 
@@ -66,8 +82,7 @@ def search_text(query: str, path: str = ".", exts: str = "",
             fp = Path(r) / fn
             try:
                 for i, ln in enumerate(
-                    fp.read_text(encoding="utf-8", errors="ignore")
-                    .splitlines(), 1
+                    _decode(fp.read_bytes()).splitlines(), 1
                 ):
                     if query in ln:
                         hits.append(f"{fp}:{i}: {ln.strip()[:200]}")
@@ -99,7 +114,7 @@ def edit_file(path: str, old: str, new: str, base: str = "") -> dict:
     f = _p(path, base)
     if not f.is_file():
         raise FsError(f"不是文件：{f}")
-    t = f.read_text(encoding="utf-8")
+    t = _decode(f.read_bytes())
     n = t.count(old)
     if n == 0:
         raise FsError("未找到要替换的 old 文本（需逐字精确匹配）")
@@ -122,6 +137,7 @@ def delete_path(path: str, base: str = "") -> dict:
 
 # name -> (handler, 是否高危需确认)
 REGISTRY = {
+    "user_dirs": (user_dirs, False),
     "list_dir": (list_dir, False),
     "read_file": (read_file, False),
     "search_text": (search_text, False),
@@ -159,6 +175,9 @@ def tool_specs() -> list[dict[str, Any]]:
                            "required": req}}}
 
     return [
+        fn("user_dirs",
+           "取本机真实 用户名/主目录/桌面/下载/文档 绝对路径"
+           "(找桌面等位置先调它,别猜用户名)", {}, []),
         fn("list_dir", "列目录(相对路径按会话目录,绝对路径全盘)",
            {"path": {"type": S}}, []),
         fn("read_file", "读文件", {"path": {"type": S}}, ["path"]),

@@ -12,6 +12,7 @@ import uuid
 from typing import Any, AsyncIterator
 
 from config import (
+    confirm_required,
     get_active_resolved,
     get_skills_enabled,
     get_workspace,
@@ -20,6 +21,7 @@ from config import (
 from skills_loader import build_injection
 from providers.openai_compat import OpenAICompatProvider
 from agent_tools import is_high_risk, run_tool, tool_specs
+import userdirs
 from store import get_agent, save_agent
 
 RUNS: dict[str, dict[str, Any]] = {}
@@ -69,6 +71,9 @@ _SYS = (
     "用提供的工具完成用户的编程/文件任务：先用只读工具(list_dir/read_file/"
     "search_text)了解情况，再做最小且精确的改动(edit_file 优先于 write_file)。"
     "改完代码调用 run_tests 验证。一次只调用一个工具。"
+    "凡是涉及第三方库/框架/API 的用法、版本差异、报错信息、或任何你不确定"
+    "的最新信息，务必先调用 web_search 查官方文档/资料再动手，不要凭记忆"
+    "硬写。{dirs}涉及用户目录时用上述真实路径或 user_dirs 工具，别猜。"
     "完成后用简洁中文说明你做了什么。当前工作目录：{cwd}"
 )
 
@@ -93,7 +98,7 @@ def start_run(task: str) -> tuple[str | None, str | None]:
         return None, f"工作目录不是 git 仓库：{cwd}（需要 git 安全网，请先 git init）"
     if _provider() is None:
         return None, "未配置可用的云端 API（Agent 需要支持工具调用的模型）"
-    sys_content = _SYS.format(cwd=cwd)
+    sys_content = _SYS.format(cwd=cwd, dirs=userdirs.prompt_hint())
     skills = build_injection(get_skills_enabled())
     if skills:
         sys_content = skills + "\n\n" + sys_content
@@ -144,7 +149,8 @@ async def _drive(rid: str) -> AsyncIterator[bytes]:
         # 1) 处理当前 batch 里未完成的 tool_call
         while run["bi"] < len(run["batch"]):
             c = run["batch"][run["bi"]]
-            if is_high_risk(c["name"]) and not c.get("_decided"):
+            if (confirm_required(c["name"], is_high_risk(c["name"]))
+                    and not c.get("_decided")):
                 run["status"] = "awaiting"
                 yield _rec(run, {"type": "confirm", "tool": c["name"],
                                  "args": c["arguments"],

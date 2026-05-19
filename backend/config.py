@@ -12,9 +12,12 @@ import json
 import os
 import secrets
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 if getattr(sys, "frozen", False):
     # PyInstaller 打包后：exe 位于 <resources>/backend/ai-helper-backend.exe
@@ -63,6 +66,9 @@ DEFAULTS: dict[str, Any] = {
     "providers": [],
     "active": {"provider_id": "", "preset_label": ""},
     "theme": "dark",  # dark | light | system
+    # 高危确认档：all=每个改动都确认；risky=仅删/跑命令/回滚/动安全边界
+    # 才确认（默认，新建/写/改静默执行，有 git 检查点兜底）；none=全不确认
+    "confirm_level": "risky",
     "system_prompt": "",  # 全局系统提示词，对所有对话/所有 API 生效
     "skills_enabled": True,  # 写代码时注入工程 skills（仅编程 Agent）
     "github": {"token": "", "username": ""},  # PAT 仅本机 data/，gitignore
@@ -227,17 +233,50 @@ def mask_provider(p: dict[str, Any]) -> dict[str, Any]:
 OLLAMA_PID = "__ollama__"
 
 
+_OLLAMA_CACHE: dict[str, Any] = {"ts": 0.0, "base": "", "models": []}
+
+
+def _ollama_models(base_url: str) -> list[str]:
+    """列本机已安装的 Ollama 模型（GET /api/tags）。短超时 + 8s 缓存，
+    Ollama 没开/超时则安全降级返回缓存或 []，绝不拖慢页面。"""
+    base = (base_url or "").rstrip("/")
+    now = time.time()
+    # 命中缓存（含「Ollama 没开」的负缓存）就直接用，8s 内不再探测
+    if _OLLAMA_CACHE["base"] == base and now - _OLLAMA_CACHE["ts"] < 8:
+        return _OLLAMA_CACHE["models"]
+    ms: list[str] = []
+    try:
+        r = httpx.get(f"{base}/api/tags", timeout=1.5)
+        if r.status_code == 200:
+            ms = [m.get("name", "")
+                  for m in r.json().get("models", [])
+                  if m.get("name")]
+    except (httpx.HTTPError, ValueError, KeyError):
+        ms = []
+    _OLLAMA_CACHE.update(ts=now, base=base, models=ms)
+    return ms
+
+
 def _ollama_synthetic() -> dict[str, Any]:
     oc = load_settings()["ollama"]
-    m = oc.get("model", "qwen2.5:3b")
+    base = oc.get("base_url", "http://localhost:11434")
+    configured = oc.get("model", "qwen2.5:3b")
+    models = list(_ollama_models(base))
+    # 配置里那个始终在列表里（且排第一），避免它没装时无法选
+    if configured and configured not in models:
+        models.insert(0, configured)
+    if not models:
+        models = [configured]
     return {
         "id": OLLAMA_PID,
         "name": "本地 Ollama",
         "format": "openai_compat",
-        "base_url": oc.get("base_url", "http://localhost:11434"),
+        "base_url": base,
         "api_key_set": True,  # 本地无需 key
-        "capability": "本地小模型：免费、隐私，能力有限，适合简单/离线",
-        "presets": [{"label": m, "model": m, "extra_body": {}}],
+        "capability": ("本地模型：免费、隐私；可在此直接切换本机已安装"
+                       "的任意 Ollama 模型"),
+        "presets": [{"label": m, "model": m, "extra_body": {}}
+                    for m in models],
         "builtin": True,  # 前端据此禁用编辑/删除
     }
 
@@ -249,17 +288,18 @@ def public_state() -> dict[str, Any]:
     return {"providers": provs, "active": s["active"]}
 
 
-def _resolve_ollama() -> dict[str, Any]:
+def _resolve_ollama(model: str | None = None) -> dict[str, Any]:
     oc = load_settings()["ollama"]
+    m = (model or "").strip() or oc.get("model", "qwen2.5:3b")
     return {
         "format": "openai_compat",
         "base_url": oc.get("base_url", "http://localhost:11434"),
         "api_key": "ollama",
-        "model": oc.get("model", "qwen2.5:3b"),
+        "model": m,
         "extra_body": {},
         "provider_id": OLLAMA_PID,
         "provider_name": "本地 Ollama",
-        "preset_label": oc.get("model", "qwen2.5:3b"),
+        "preset_label": m,
     }
 
 
@@ -268,7 +308,7 @@ def get_active_resolved() -> dict[str, Any] | None:
     s = load_settings()
     act = s.get("active", {})
     if act.get("provider_id") == OLLAMA_PID:
-        return _resolve_ollama()
+        return _resolve_ollama(act.get("preset_label"))
     prov = _find(s["providers"], act.get("provider_id", ""))
     if not prov:
         return None
@@ -294,7 +334,7 @@ def get_active_resolved() -> dict[str, Any] | None:
 def resolve_choice(provider_id: str, preset_label: str) -> dict[str, Any] | None:
     """按指定 provider+preset 解析（供路由器选择后使用）。"""
     if provider_id == OLLAMA_PID:
-        return _resolve_ollama()
+        return _resolve_ollama(preset_label)
     s = load_settings()
     prov = _find(s["providers"], provider_id)
     if not prov:
@@ -501,6 +541,38 @@ def set_skills_enabled(v: bool) -> bool:
     s["skills_enabled"] = bool(v)
     save_settings(s)
     return s["skills_enabled"]
+
+
+# 即便在 risky 档也必须用户确认：不可逆 或 改动安全边界的操作
+_ALWAYS_CONFIRM = {
+    "delete_path", "run_command", "git_rollback",
+    "set_github_token", "github_push_source", "add_allowed_root",
+}
+
+
+def get_confirm_level() -> str:
+    v = load_settings().get("confirm_level", "risky")
+    return v if v in ("all", "risky", "none") else "risky"
+
+
+def set_confirm_level(v: str) -> str:
+    s = load_settings()
+    s["confirm_level"] = v if v in ("all", "risky", "none") else "risky"
+    save_settings(s)
+    return s["confirm_level"]
+
+
+def confirm_required(tool_name: str, high_risk: bool) -> bool:
+    """按当前确认档决定该高危工具是否还要弹窗确认。
+    非高危直接放行；none 全静默；all 全确认；risky 仅 _ALWAYS_CONFIRM。"""
+    if not high_risk:
+        return False
+    lvl = get_confirm_level()
+    if lvl == "none":
+        return False
+    if lvl == "all":
+        return True
+    return tool_name in _ALWAYS_CONFIRM
 
 
 def get_theme() -> str:

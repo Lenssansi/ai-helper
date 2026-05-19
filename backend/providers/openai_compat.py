@@ -24,6 +24,16 @@ class OpenAICompatProvider:
         self.api_key = cfg.get("api_key", "")
         self.model = cfg.get("model", "")
         self.extra_body = cfg.get("extra_body", {}) or {}
+        self.provider_id = cfg.get("provider_id", "")
+        self.provider_name = cfg.get("provider_name", "")
+
+    def _record(self, usage: dict | None) -> None:
+        """记一次用量；本地 Ollama / 无 usage 字段则忽略，绝不影响主流程。"""
+        try:
+            import usage as _u
+            _u.record(self.provider_id, self.provider_name, usage)
+        except Exception:  # noqa: BLE001
+            pass
 
     async def stream_chat(
         self, messages: list[ChatMessage]
@@ -43,6 +53,9 @@ class OpenAICompatProvider:
             "model": self.model,
             "messages": messages,
             "stream": True,
+            # 让上游在尾包附带 usage（DeepSeek/OpenAI 等支持；不支持的
+            # 服务通常忽略该字段，拿不到就不计，绝不影响对话）
+            "stream_options": {"include_usage": True},
             **self.extra_body,
         }
 
@@ -57,16 +70,19 @@ class OpenAICompatProvider:
                         raise ProviderError(
                             f"上游返回 {resp.status_code}：{body[:500]}"
                         )
+                    last_usage = None
                     async for line in resp.aiter_lines():
                         if not line or not line.startswith("data:"):
                             continue
                         data = line[5:].strip()
                         if data == "[DONE]":
-                            return
+                            break
                         try:
                             obj = json.loads(data)
                         except json.JSONDecodeError:
                             continue
+                        if obj.get("usage"):
+                            last_usage = obj["usage"]
                         choices = obj.get("choices") or []
                         if not choices:
                             continue
@@ -78,6 +94,7 @@ class OpenAICompatProvider:
                         piece = delta.get("content")
                         if piece:
                             yield ("answer", piece)
+                    self._record(last_usage)
         except httpx.RequestError as e:
             raise ProviderError(f"网络错误：连不上 {self.base_url}（{e}）") from e
 
@@ -93,7 +110,8 @@ class OpenAICompatProvider:
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "tools": tools,
+            # 空 tools 不传：部分上游对 "tools": [] 报错（连通性自检会用到）
+            **({"tools": tools} if tools else {}),
             **self.extra_body,
         }
         try:
@@ -108,7 +126,9 @@ class OpenAICompatProvider:
             raise ProviderError(f"网络错误：{e}") from e
         if r.status_code != 200:
             raise ProviderError(f"上游 {r.status_code}：{r.text[:500]}")
-        msg = r.json()["choices"][0]["message"]
+        body = r.json()
+        self._record(body.get("usage"))
+        msg = body["choices"][0]["message"]
         calls = []
         for tc in msg.get("tool_calls") or []:
             fn = tc.get("function", {})

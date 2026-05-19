@@ -18,6 +18,7 @@ def get_settings_summary() -> dict[str, Any]:
     ws = config.get_workspace()
     return {
         "theme": s.get("theme"),
+        "confirm_level": config.get_confirm_level(),
         "brain": config.get_brain(),
         "ollama": config.get_ollama(),
         "skills_enabled": config.get_skills_enabled(),
@@ -33,6 +34,10 @@ def get_settings_summary() -> dict[str, Any]:
 
 def set_theme(theme: str) -> dict:
     return {"theme": config.set_theme(theme)}
+
+
+def set_confirm_level(level: str) -> dict:
+    return {"confirm_level": config.set_confirm_level(level)}
 
 
 def set_brain(auto_route: bool | None = None, local_answer: bool | None = None,
@@ -131,6 +136,7 @@ def github_push_source(repo: str = "ai-helper",
 REGISTRY = {
     "get_settings": (get_settings_summary, False),
     "set_theme": (set_theme, False),
+    "set_confirm_level": (set_confirm_level, False),
     "set_brain": (set_brain, False),
     "set_ollama": (set_ollama, False),
     "set_skills": (set_skills, False),
@@ -175,6 +181,10 @@ def tool_specs() -> list[dict[str, Any]]:
         fn("get_settings", "查看当前所有可改设置", {}, []),
         fn("set_theme", "主题 dark|light|system",
            {"theme": {"type": S}}, ["theme"]),
+        fn("set_confirm_level",
+           "高危确认档 all(每个改动都确认)|risky(默认,仅删/跑命令/"
+           "回滚/动安全边界确认)|none(全不确认)",
+           {"level": {"type": S}}, ["level"]),
         fn("set_brain", "本地大脑开关",
            {"auto_route": {"type": B}, "local_answer": {"type": B},
             "summary": {"type": B}}, []),

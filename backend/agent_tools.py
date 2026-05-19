@@ -23,6 +23,16 @@ class ToolError(Exception):
     pass
 
 
+def _decode(b: bytes) -> str:
+    """utf-8 失败回退 GB18030/UTF-16，消除中文文件乱码。"""
+    for enc in ("utf-8", "gb18030", "utf-16"):
+        try:
+            return b.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return b.decode("latin-1", "replace")
+
+
 def _safe(path: str) -> Path:
     if not path:
         raise ToolError("路径为空")
@@ -39,6 +49,12 @@ def _cwd() -> str:
 
 # ---------- 只读 ----------
 
+def user_dirs() -> dict[str, Any]:
+    """返回本机真实 用户名/主目录/桌面/下载/文档 绝对路径（只读）。"""
+    import userdirs
+    return userdirs.user_dirs()
+
+
 def list_dir(path: str = ".") -> dict[str, Any]:
     p = _safe(path if os.path.isabs(path) else os.path.join(_cwd(), path))
     if not p.exists():
@@ -53,7 +69,7 @@ def read_file(path: str) -> dict[str, Any]:
     p = _safe(path if os.path.isabs(path) else os.path.join(_cwd(), path))
     if not p.is_file():
         raise ToolError(f"不是文件或不存在：{p}")
-    data = p.read_text(encoding="utf-8", errors="replace")
+    data = _decode(p.read_bytes())
     truncated = len(data) > MAX_READ
     return {"path": str(p), "content": data[:MAX_READ],
             "truncated": truncated}
@@ -73,8 +89,7 @@ def search_text(query: str, path: str = ".",
             fp = Path(root) / f
             try:
                 for i, line in enumerate(
-                    fp.read_text(encoding="utf-8", errors="ignore")
-                    .splitlines(), 1
+                    _decode(fp.read_bytes()).splitlines(), 1
                 ):
                     if query in line:
                         hits.append(f"{fp}:{i}: {line.strip()[:200]}")
@@ -108,7 +123,7 @@ def edit_file(path: str, old: str, new: str) -> dict[str, Any]:
     p = _safe(path if os.path.isabs(path) else os.path.join(_cwd(), path))
     if not p.is_file():
         raise ToolError(f"不是文件：{p}")
-    text = p.read_text(encoding="utf-8")
+    text = _decode(p.read_bytes())
     n = text.count(old)
     if n == 0:
         raise ToolError("未找到要替换的 old 文本（需逐字精确匹配）")
@@ -190,6 +205,17 @@ def git_init(path: str) -> dict[str, Any]:
     return {"path": str(p), "initialized": True}
 
 
+def web_search(query: str, n: int = 5) -> dict[str, Any]:
+    """联网搜索（无需 key，只读，自动执行）。供查使用文档/实时信息。"""
+    from search import web_search_sync
+    try:
+        k = int(n)
+    except (TypeError, ValueError):
+        k = 5
+    results = web_search_sync(query, max(1, min(k, 8)))
+    return {"query": query, "results": results, "count": len(results)}
+
+
 def run_tests() -> dict[str, Any]:
     cmd = get_workspace().get("test_cmd", "").strip()
     if not cmd:
@@ -199,9 +225,11 @@ def run_tests() -> dict[str, Any]:
 
 # name -> (handler, high_risk 需用户确认)
 REGISTRY: dict[str, tuple[Any, bool]] = {
+    "user_dirs": (user_dirs, False),
     "list_dir": (list_dir, False),
     "read_file": (read_file, False),
     "search_text": (search_text, False),
+    "web_search": (web_search, False),
     "create_file": (create_file, True),
     "write_file": (write_file, True),
     "edit_file": (edit_file, True),
@@ -248,11 +276,19 @@ def tool_specs() -> list[dict[str, Any]]:
         }
 
     return [
+        fn("user_dirs",
+           "取本机真实 用户名/主目录/桌面/下载/文档 绝对路径"
+           "(涉及用户目录先调它,别猜 admin)", {}, []),
         fn("list_dir", "列目录", {"path": {"type": S}}, []),
         fn("read_file", "读文件", {"path": {"type": S}}, ["path"]),
         fn("search_text", "在目录内搜文本",
            {"query": {"type": S}, "path": {"type": S},
             "exts": {"type": S, "description": "逗号分隔扩展名,可空"}},
+           ["query"]),
+        fn("web_search",
+           "联网搜索(无需key)。查使用文档/库用法/报错/实时信息时主动用",
+           {"query": {"type": S},
+            "n": {"type": "integer", "description": "结果条数,默认5"}},
            ["query"]),
         fn("create_file", "新建文件(不存在才行)",
            {"path": {"type": S}, "content": {"type": S}}, ["path"]),

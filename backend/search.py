@@ -104,6 +104,52 @@ async def web_search(query: str, n: int = 5) -> list[dict[str, Any]]:
     return out
 
 
+def web_search_sync(query: str, n: int = 5) -> list[dict[str, Any]]:
+    """同步版（供 Agent 工具循环用，避免在已运行的事件循环里 asyncio.run）。
+    逻辑同 web_search：Bing 优先，DuckDuckGo lite 兜底；失败安全返回 []。"""
+    q = (query or "").strip()
+    if not q:
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        with httpx.Client(timeout=8.0, headers=_HDRS,
+                          follow_redirects=True) as c:
+            try:
+                r = c.get("https://www.bing.com/search", params={"q": q})
+                body = r.text if r.status_code == 200 else None
+            except (httpx.RequestError, httpx.HTTPError):
+                body = None
+            if body:
+                for m in _BING.finditer(body):
+                    out.append({
+                        "title": _clean(m.group("title"))[:160],
+                        "snippet": _clean(m.group("snip"))[:320],
+                        "url": _debing(m.group("url")),
+                    })
+                    if len(out) >= n:
+                        return out
+            if out:
+                return out
+            try:
+                r = c.post("https://lite.duckduckgo.com/lite/",
+                           data={"q": q})
+                body = r.text if r.status_code == 200 else None
+            except (httpx.RequestError, httpx.HTTPError):
+                body = None
+            if body:
+                for m in _DDG.finditer(body):
+                    out.append({
+                        "title": _clean(m.group("title"))[:160],
+                        "snippet": _clean(m.group("snip"))[:320],
+                        "url": html.unescape(m.group("url")),
+                    })
+                    if len(out) >= n:
+                        break
+    except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
 def as_context(results: list[dict[str, Any]]) -> str:
     if not results:
         return ""

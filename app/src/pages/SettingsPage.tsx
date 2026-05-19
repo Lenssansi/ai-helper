@@ -18,7 +18,10 @@ import {
   updateSkills,
   setSystemPrompt as apiSetSysPrompt,
   setTheme as apiSetTheme,
+  getConfirmLevel,
+  setConfirmLevel as apiSetConfirmLevel,
   type BrainCfg,
+  type ConfirmLevel,
   type OllamaStatus,
   type ThemeMode,
   type GithubPreview,
@@ -34,6 +37,16 @@ const THEMES: { v: ThemeMode; label: string }[] = [
   { v: "system", label: "跟随系统" },
 ];
 
+const CONFIRMS: { v: ConfirmLevel; label: string; hint: string }[] = [
+  { v: "all", label: "每个都确认", hint: "任何改动/命令前都弹窗" },
+  {
+    v: "risky",
+    label: "仅危险操作（推荐）",
+    hint: "新建/写/改静默执行；删除、跑命令、Git 回滚、改安全边界才确认",
+  },
+  { v: "none", label: "全不确认", hint: "所有操作直接执行，谨慎使用" },
+];
+
 export default function SettingsPage({
   who,
   theme,
@@ -47,6 +60,8 @@ export default function SettingsPage({
   const [msg, setMsg] = useState("");
   const [sys, setSys] = useState("");
   const [sysMsg, setSysMsg] = useState("");
+  const [confirmLv, setConfirmLv] = useState<ConfirmLevel>("risky");
+  const [cfMsg, setCfMsg] = useState("");
 
   const [ost, setOst] = useState<OllamaStatus | null>(null);
   const [oBase, setOBase] = useState("");
@@ -85,6 +100,9 @@ export default function SettingsPage({
   useEffect(() => {
     getSystemPrompt()
       .then((r) => setSys(r.system_prompt))
+      .catch(() => void 0);
+    getConfirmLevel()
+      .then((r) => setConfirmLv(r.confirm_level))
       .catch(() => void 0);
     getBrain()
       .then((r) => setBrain(r.brain))
@@ -126,6 +144,17 @@ export default function SettingsPage({
       setMsg("已保存");
     } catch {
       setMsg("未持久化（远程不可改设置，仅本次会话生效）");
+    }
+  }
+
+  async function pickConfirm(v: ConfirmLevel) {
+    setConfirmLv(v);
+    setCfMsg("");
+    try {
+      await apiSetConfirmLevel(v);
+      setCfMsg("已保存");
+    } catch {
+      setCfMsg("保存失败（远程不可改设置，仅本机可改）");
     }
   }
 
@@ -183,6 +212,26 @@ export default function SettingsPage({
         <div className="muted" style={{ marginTop: 8 }}>
           注：代码高亮配色暂固定深色,亮色主题下代码块仍偏深,后续再适配。
         </div>
+      </section>
+
+      <section className="set-block">
+        <div className="set-title">高危操作确认</div>
+        <div className="seg">
+          {CONFIRMS.map((c) => (
+            <button
+              key={c.v}
+              className={"seg-btn" + (confirmLv === c.v ? " on" : "")}
+              onClick={() => pickConfirm(c.v)}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+        <div className="muted" style={{ marginTop: 8 }}>
+          {CONFIRMS.find((c) => c.v === confirmLv)?.hint}
+          。编程 Agent 每次任务开始有 Git 检查点，可一键回滚。
+        </div>
+        <div className="cfg-msg">{cfMsg}</div>
       </section>
 
       <section className="set-block">

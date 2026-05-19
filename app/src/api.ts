@@ -123,9 +123,47 @@ export const deleteProvider = (id: string) =>
 export const setActive = (provider_id: string, preset_label: string) =>
   sendJSON<ActiveSel>("/api/active", "POST", { provider_id, preset_label });
 
+export interface UsageRow {
+  name: string;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+export interface UsageState {
+  rows: UsageRow[];
+  totals: Omit<UsageRow, "name">;
+  updated: string;
+}
+export const getUsage = () => getJSON<UsageState>("/api/usage");
+export const resetUsage = () =>
+  sendJSON<UsageState>("/api/usage/reset", "POST");
+
+export interface ProviderTest {
+  ok: boolean;
+  ms?: number;
+  model?: string;
+  error?: string;
+}
+export const testProvider = (provider_id: string, preset_label: string) =>
+  sendJSON<ProviderTest>("/api/providers/test", "POST", {
+    provider_id,
+    preset_label,
+  });
+
 export const getTheme = () => getJSON<{ theme: ThemeMode }>("/api/theme");
 export const setTheme = (theme: ThemeMode) =>
   sendJSON<{ theme: ThemeMode }>("/api/theme", "POST", { theme });
+
+export type ConfirmLevel = "all" | "risky" | "none";
+export const getConfirmLevel = () =>
+  getJSON<{ confirm_level: ConfirmLevel }>("/api/confirm_level");
+export const setConfirmLevel = (confirm_level: ConfirmLevel) =>
+  sendJSON<{ confirm_level: ConfirmLevel }>(
+    "/api/confirm_level",
+    "POST",
+    { confirm_level },
+  );
 
 export interface SkillsStatus {
   enabled: boolean;

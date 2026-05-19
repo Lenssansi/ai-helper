@@ -12,10 +12,11 @@ import json
 import uuid
 from typing import Any, AsyncIterator
 
-from config import get_active_resolved
+from config import confirm_required, get_active_resolved
 from providers.openai_compat import OpenAICompatProvider
 import chatfs
 import settings_tools
+import userdirs
 
 RUNS: dict[str, dict[str, Any]] = {}
 
@@ -23,12 +24,14 @@ _SYS_FILE = (
     "你是 ai-helper 的助手，可用工具读写用户电脑上的文件。"
     "读/列/搜会自动执行；新建/写/改/删会先弹窗让用户确认。"
     "相对路径相对会话目录({base})，绝对路径可访问全盘。"
+    "{dirs}"
+    "拿不准目录时先用 list_dir 或 user_dirs 工具确认，不要凭空构造路径。"
     "做最小必要的改动，完成后用简洁中文说明。一次只调用一个工具。"
 )
 _SYS_SET = (
     "你是 ai-helper 的设置助手。用户用自然语言要求改设置时，调用相应"
     "工具完成（除「全局系统提示词」外都可改）。读类自动执行；新增授权"
-    "根目录、改 GitHub Token、publish_self 等高危会先让用户确认。"
+    "根目录、改 GitHub Token、push 源码到 GitHub 等高危按确认档提示。"
     "拿不准先 get_settings 看现状。完成后用简洁中文说明改了什么。"
     "一次只调用一个工具。"
 )
@@ -52,7 +55,8 @@ def start(messages: list[dict], base: str,
         return None, "未配置可用的云端 API（需要支持工具调用的模型）"
     ts = _TOOLSETS.get(mode, chatfs)
     sysc = (_SYS_SET if mode == "settings"
-            else _SYS_FILE.format(base=base or "(默认)"))
+            else _SYS_FILE.format(base=base or "(默认)",
+                                  dirs=userdirs.prompt_hint()))
     rid = uuid.uuid4().hex[:12]
     RUNS[rid] = {
         "messages": [{"role": "system", "content": sysc}] + list(messages),
@@ -73,7 +77,8 @@ async def _drive(rid: str) -> AsyncIterator[bytes]:
     while True:
         while run["bi"] < len(run["batch"]):
             c = run["batch"][run["bi"]]
-            if ts.is_high_risk(c["name"]) and not c.get("_decided"):
+            if (confirm_required(c["name"], ts.is_high_risk(c["name"]))
+                    and not c.get("_decided")):
                 run["status"] = "awaiting"
                 yield _sse({"type": "confirm", "tool": c["name"],
                             "args": c["arguments"], "call_id": c["id"]})

@@ -613,6 +613,53 @@ button.mini {
 .badge.warn {
   background: var(--warn);
 }
+.badge.ok {
+  background: #1f7a3d;
+}
+.prov-test {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.prov-test button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  padding: 4px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.prov-test button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.usage-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: 13px;
+}
+.usage-tbl th,
+.usage-tbl td {
+  border: 1px solid var(--border-2);
+  padding: 6px 10px;
+  text-align: right;
+}
+.usage-tbl th:first-child,
+.usage-tbl td:first-child {
+  text-align: left;
+}
+.usage-tbl thead th {
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.usage-tbl tr.usage-total td {
+  font-weight: 600;
+  background: var(--panel-2);
+}
 .prov-presets {
   display: flex;
   flex-wrap: wrap;

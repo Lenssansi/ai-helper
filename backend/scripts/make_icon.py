@@ -13,7 +13,9 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "assets" / "robot.png"
 DST = ROOT / "assets" / "icon.ico"
-SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+# 必含 256×256，否则 electron-builder/Windows 会忽略图标回退默认图
+SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64),
+         (128, 128), (256, 256)]
 
 
 def main() -> None:
@@ -22,8 +24,14 @@ def main() -> None:
     side = max(img.size)
     canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
     canvas.paste(img, ((side - img.width) // 2, (side - img.height) // 2))
+    # 关键：Pillow 存 ICO 不会放大，源若 < 256 则 256 档会被丢弃，
+    # 导致 electron-builder/Windows 忽略图标回退默认图。先放大到 256。
+    base = max(256, side)
+    canvas = canvas.resize((base, base), Image.LANCZOS)
     canvas.save(DST, format="ICO", sizes=SIZES)
-    print(f"icon written: {DST}")
+    with Image.open(DST) as chk:
+        got = sorted(chk.ico.sizes()) if hasattr(chk, "ico") else []
+    print(f"icon written: {DST}  含尺寸={got}")
 
 
 if __name__ == "__main__":

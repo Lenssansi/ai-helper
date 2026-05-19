@@ -2,9 +2,14 @@ import { useEffect, useState } from "react";
 import {
   deleteProvider,
   getProviders,
+  getUsage,
+  resetUsage,
   setActive,
+  testProvider,
   upsertProvider,
   type ProvidersState,
+  type ProviderTest,
+  type UsageState,
   type WhoAmI,
 } from "../api";
 
@@ -43,6 +48,9 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
   const [ps, setPs] = useState<ProvidersState | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [err, setErr] = useState("");
+  const [usage, setUsage] = useState<UsageState | null>(null);
+  const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [tested, setTested] = useState<Record<string, ProviderTest>>({});
 
   async function reload() {
     try {
@@ -50,10 +58,47 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
     } catch {
       /* ignore */
     }
+    try {
+      setUsage(await getUsage());
+    } catch {
+      /* ignore */
+    }
   }
   useEffect(() => {
     reload();
   }, []);
+
+  async function runTest(p: { id: string; presets: { label: string }[] }) {
+    const label =
+      ps && ps.active.provider_id === p.id
+        ? ps.active.preset_label
+        : p.presets[0]?.label || "";
+    setTesting((m) => ({ ...m, [p.id]: true }));
+    setTested((m) => {
+      const n = { ...m };
+      delete n[p.id];
+      return n;
+    });
+    try {
+      const r = await testProvider(p.id, label);
+      setTested((m) => ({ ...m, [p.id]: r }));
+    } catch (e) {
+      setTested((m) => ({
+        ...m,
+        [p.id]: { ok: false, error: (e as Error).message },
+      }));
+    } finally {
+      setTesting((m) => ({ ...m, [p.id]: false }));
+    }
+  }
+
+  async function clearUsage() {
+    try {
+      setUsage(await resetUsage());
+    } catch {
+      /* ignore */
+    }
+  }
 
   function editProvider(id: string) {
     const p = ps?.providers.find((x) => x.id === id);
@@ -189,6 +234,28 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                           {pr.label}
                         </button>
                       ))}
+                    </div>
+                    <div className="prov-test">
+                      <button
+                        disabled={!!testing[p.id]}
+                        onClick={() => runTest(p)}
+                        title="用最小请求实测该 API 能否连通（默认参数）"
+                      >
+                        {testing[p.id] ? "测试中…" : "测试连通"}
+                      </button>
+                      {tested[p.id] &&
+                        (tested[p.id].ok ? (
+                          <span className="badge ok">
+                            通 {tested[p.id].ms}ms · {tested[p.id].model}
+                          </span>
+                        ) : (
+                          <span
+                            className="badge warn"
+                            title={tested[p.id].error}
+                          >
+                            失败：{tested[p.id].error}
+                          </span>
+                        ))}
                     </div>
                   </div>
                   {canManage && (
@@ -329,6 +396,62 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
             <button onClick={save}>保存</button>
             <button onClick={() => setDraft(null)}>取消</button>
           </div>
+        </div>
+      )}
+
+      {!draft && (
+        <div className="set-block" style={{ marginTop: 18 }}>
+          <div className="chat-head">
+            <div className="set-title">Token 用量统计</div>
+            {usage && usage.totals.calls > 0 && (
+              <button className="cfg-toggle" onClick={clearUsage}>
+                清零
+              </button>
+            )}
+          </div>
+          {usage && usage.rows.length ? (
+            <>
+              <table className="usage-tbl">
+                <thead>
+                  <tr>
+                    <th>API</th>
+                    <th>调用次数</th>
+                    <th>输入 tokens</th>
+                    <th>输出 tokens</th>
+                    <th>合计 tokens</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usage.rows.map((r) => (
+                    <tr key={r.name}>
+                      <td>{r.name}</td>
+                      <td>{r.calls}</td>
+                      <td>{r.prompt_tokens.toLocaleString()}</td>
+                      <td>{r.completion_tokens.toLocaleString()}</td>
+                      <td>{r.total_tokens.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                  <tr className="usage-total">
+                    <td>合计</td>
+                    <td>{usage.totals.calls}</td>
+                    <td>{usage.totals.prompt_tokens.toLocaleString()}</td>
+                    <td>
+                      {usage.totals.completion_tokens.toLocaleString()}
+                    </td>
+                    <td>{usage.totals.total_tokens.toLocaleString()}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div className="muted" style={{ marginTop: 8 }}>
+                按各 API 返回的 usage 累计；本地 Ollama 多数不返 usage 故不计。
+                {usage.updated && `（更新于 ${usage.updated}）`}
+              </div>
+            </>
+          ) : (
+            <div className="muted">
+              暂无用量记录。发起对话后，支持 usage 的云端 API 会自动累计。
+            </div>
+          )}
         </div>
       )}
     </div>

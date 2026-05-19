@@ -28,6 +28,7 @@ from config import (
     delete_provider,
     get_active_resolved,
     get_brain,
+    get_confirm_level,
     get_ollama,
     get_system_prompt,
     get_theme,
@@ -39,6 +40,7 @@ from config import (
     set_active,
     set_github,
     set_brain,
+    set_confirm_level,
     set_ollama,
     set_skills_enabled,
     set_system_prompt,
@@ -121,8 +123,17 @@ class ActivePatch(BaseModel):
     preset_label: str
 
 
+class ProviderTestReq(BaseModel):
+    provider_id: str
+    preset_label: str = ""
+
+
 class ThemePatch(BaseModel):
     theme: str
+
+
+class ConfirmLevelPatch(BaseModel):
+    confirm_level: str
 
 
 class SystemPromptPatch(BaseModel):
@@ -236,6 +247,39 @@ def post_active(
     return set_active(patch.provider_id, patch.preset_label)
 
 
+@app.post("/api/providers/test")
+async def test_provider(
+    req: ProviderTestReq,
+    caller: Caller = Depends(require_permission("api_switch")),  # noqa: ARG001
+) -> dict:
+    """用最小请求（max_tokens=1）实测该 API+预设能否连通。
+    不写真实业务、不计入对话历史；返回 ok/耗时/错误。"""
+    import time
+
+    from config import resolve_choice
+
+    resolved = resolve_choice(req.provider_id, req.preset_label)
+    if not resolved:
+        return {"ok": False, "error": "未找到该 API/预设"}
+    if not resolved.get("api_key"):
+        return {"ok": False, "error": "未配置 API key"}
+    prov = build_provider(resolved)
+    t0 = time.perf_counter()
+    try:
+        r = await prov.tool_complete(
+            [{"role": "user", "content": "ping"}], []
+        )
+    except ProviderError as e:
+        return {"ok": False, "error": str(e)[:300],
+                "model": resolved.get("model", "")}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300],
+                "model": resolved.get("model", "")}
+    ms = int((time.perf_counter() - t0) * 1000)
+    _ = r
+    return {"ok": True, "ms": ms, "model": resolved.get("model", "")}
+
+
 @app.get("/api/theme")
 def read_theme(caller: Caller = Depends(get_caller)) -> dict:  # noqa: ARG001
     return {"theme": get_theme()}
@@ -247,6 +291,35 @@ def write_theme(
     caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
 ) -> dict:
     return {"theme": set_theme(patch.theme)}
+
+
+@app.get("/api/confirm_level")
+def read_confirm_level(
+    caller: Caller = Depends(get_caller),  # noqa: ARG001
+) -> dict:
+    return {"confirm_level": get_confirm_level()}
+
+
+@app.post("/api/confirm_level")
+def write_confirm_level(
+    patch: ConfirmLevelPatch,
+    caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
+) -> dict:
+    return {"confirm_level": set_confirm_level(patch.confirm_level)}
+
+
+@app.get("/api/usage")
+def read_usage(caller: Caller = Depends(get_caller)) -> dict:  # noqa: ARG001
+    import usage
+    return usage.get_usage()
+
+
+@app.post("/api/usage/reset")
+def clear_usage(
+    caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
+) -> dict:
+    import usage
+    return usage.reset_usage()
 
 
 @app.get("/api/system_prompt")
