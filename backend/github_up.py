@@ -71,6 +71,10 @@ def _pending_files(path: str) -> list[str]:
 def scan_suspects(path: str, files: list[str]) -> dict[str, Any]:
     """挑出疑似临时/超大/数量异常，返回 reasons（空=干净可直传）。"""
     p = Path(path)
+    # 私人记忆区绝不该进公开库：即便 .gitignore 被改坏也在此兜底拦下
+    private = [f for f in files
+               if f.replace("\\", "/").startswith(".private-memory/")
+               or "/.private-memory/" in f.replace("\\", "/")]
     temp = [f for f in files if _SUSPECT_RE.search(f)]
     big: list[str] = []
     for f in files:
@@ -82,6 +86,10 @@ def scan_suspects(path: str, files: list[str]) -> dict[str, Any]:
             big.append(f"{f} ({sz // 1024 // 1024}MB)")
     too_many = len(files) > _MANY
     reasons: list[str] = []
+    if private:
+        reasons.append(
+            f"私人记忆 .private-memory/ {len(private)} 个(绝不该进公开库)"
+        )
     if temp:
         reasons.append(f"疑似临时/脚手架文件 {len(temp)} 个")
     if big:
@@ -90,7 +98,7 @@ def scan_suspects(path: str, files: list[str]) -> dict[str, Any]:
         reasons.append(
             f"待传文件数异常({len(files)}>{_MANY})，疑似 .gitignore 失效"
         )
-    return {"temp": temp[:50], "big": big[:50],
+    return {"temp": (private + temp)[:50], "big": big[:50],
             "too_many": too_many, "reasons": reasons}
 
 

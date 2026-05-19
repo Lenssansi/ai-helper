@@ -12,6 +12,9 @@ id_rsa.*
 # settings.json(含远程令牌)、API 密钥等本地数据
 data/
 
+# 本地私有备注目录（仅本机，不进仓库）；上传自检亦会兜底拦截
+.private-memory/
+
 # Python 后端
 backend/.venv/
 # PyInstaller 中间产物 / 冻结出的后端 exe
