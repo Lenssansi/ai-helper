@@ -183,12 +183,28 @@ export interface GithubStatus {
   project_root: string;
   dev: boolean; // 打包分发版=false → 前端隐藏 GitHub 整组
 }
+export interface GithubSuspects {
+  temp: string[];
+  big: string[];
+  too_many: boolean;
+  reasons: string[];
+}
 export interface GithubPreview {
   path: string;
   gitignore_added: string[];
   forced_excludes: string[];
   will_upload: string[];
   will_count: number;
+  suspects?: GithubSuspects;
+}
+export interface GithubUploadResult {
+  ok: boolean;
+  repo_url?: string;
+  created?: boolean;
+  needs_confirm?: boolean;
+  suspects?: GithubSuspects;
+  will_count?: number;
+  message?: string;
 }
 export const getGithub = () => getJSON<GithubStatus>("/api/github");
 export const saveGithub = (p: { token?: string; username?: string }) =>
@@ -206,13 +222,15 @@ export const githubSaveDoc = (path: string, content: string) =>
 export const githubUpload = (
   path: string,
   repo: string,
-  isPrivate: boolean
+  isPrivate: boolean,
+  confirm = false
 ) =>
-  sendJSON<{ ok: boolean; repo_url: string; created: boolean }>(
-    "/api/github/upload",
-    "POST",
-    { path, repo, private: isPrivate }
-  );
+  sendJSON<GithubUploadResult>("/api/github/upload", "POST", {
+    path,
+    repo,
+    private: isPrivate,
+    confirm,
+  });
 
 export const getSystemPrompt = () =>
   getJSON<{ system_prompt: string }>("/api/system_prompt");

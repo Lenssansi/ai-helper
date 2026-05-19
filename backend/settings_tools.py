@@ -119,16 +119,19 @@ def make_description() -> dict:
     return {"ok": True, "file": "说明文档.md"}
 
 
-def github_push_source(repo: str = "ai-helper",
-                       private: bool = True) -> dict:  # 高危
-    """把本项目【源码 + 说明文档】push/更新到 GitHub（不含安装包）。"""
+def github_push_source(repo: str = "ai-helper", private: bool = True,
+                        confirm: bool = False) -> dict:  # 高危
+    """把本项目【源码 + 说明文档】push/更新到 GitHub（不含安装包）。
+    自检发现疑似临时/异常文件且 confirm=False 时返回 needs_confirm，
+    需用户确认后再以 confirm=True 调一次。"""
     import github_up
     g = config.get_github()
     if not g.get("token") or not g.get("username"):
         return {"error": "未配置 GitHub Token/用户名（设置页先填）"}
     try:
         return github_up.upload(str(config.PROJECT_ROOT), repo,
-                                private, g["token"], g["username"])
+                                private, g["token"], g["username"],
+                                confirm)
     except ValueError as e:
         return {"error": str(e)}
 
@@ -211,6 +214,9 @@ def tool_specs() -> list[dict[str, Any]]:
            "为本项目生成「说明文档」(项目描述)写入 说明文档.md", {}, []),
         fn("github_push_source",
            "把本项目源码+说明文档 push/更新到 GitHub(不含安装包;"
-           "高危,会确认)",
-           {"repo": {"type": S}, "private": {"type": B}}, []),
+           "高危,会确认)。若返回 needs_confirm，向用户复述疑似文件，"
+           "用户明确同意后再用 confirm=true 调一次",
+           {"repo": {"type": S}, "private": {"type": B},
+            "confirm": {"type": B,
+                        "description": "用户确认强制上传时传 true"}}, []),
     ]

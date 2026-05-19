@@ -673,12 +673,45 @@ export default function SettingsPage({
                     return;
                   setGhMsg("上传中…");
                   try {
-                    const r = await githubUpload(
+                    let r = await githubUpload(
                       upPath.trim(),
                       upRepo.trim(),
                       upPriv
                     );
-                    setGhMsg("已上传：" + r.repo_url);
+                    if (r.needs_confirm) {
+                      const s = r.suspects;
+                      const detail = [
+                        ...(s?.temp ?? []),
+                        ...(s?.big ?? []),
+                      ]
+                        .slice(0, 15)
+                        .join("\n");
+                      const force = confirm(
+                        "上传自检拦下了可能不该传的文件：\n" +
+                          (s?.reasons ?? []).join("；") +
+                          "\n\n" +
+                          detail +
+                          "\n\n建议先清理这些文件。确认这些都没问题、" +
+                          "仍要强制上传吗？"
+                      );
+                      if (!force) {
+                        setGhMsg(
+                          "已取消：" + (r.message || "请清理后重试")
+                        );
+                        return;
+                      }
+                      r = await githubUpload(
+                        upPath.trim(),
+                        upRepo.trim(),
+                        upPriv,
+                        true
+                      );
+                    }
+                    setGhMsg(
+                      r.ok
+                        ? "已上传：" + (r.repo_url || "")
+                        : r.message || "上传失败"
+                    );
                   } catch (e) {
                     setGhMsg((e as Error).message);
                   }
@@ -698,6 +731,18 @@ export default function SettingsPage({
                 "；已自动写入 .gitignore：" +
                   ghPrev.gitignore_added.join(" ")}
             </div>
+            {ghPrev.suspects && ghPrev.suspects.reasons.length > 0 && (
+              <div className="cfg-note warn" style={{ marginTop: 6 }}>
+                ⚠ 自检发现可疑文件（{ghPrev.suspects.reasons.join("；")}）：
+                {[
+                  ...ghPrev.suspects.temp,
+                  ...ghPrev.suspects.big,
+                ]
+                  .slice(0, 12)
+                  .join(" ｜ ")}
+                。建议清理后再传；强行上传会再次弹确认。
+              </div>
+            )}
             <div className="muted" style={{ marginTop: 6 }}>
               强制排除（不传密钥/隐私/大文件）：
               {ghPrev.forced_excludes.join(" ")}

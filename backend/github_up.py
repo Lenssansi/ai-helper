@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,57 @@ def ensure_gitignore(path: str) -> list[str]:
     return add
 
 
+# 疑似临时/脚手架文件：单下划线开头(排除 __dunder__)的 json/log/tmp/txt，
+# 编辑器备份(.tmp/.bak/.orig/.rej/.swp/~)、OS 垃圾。命中即拦，要显式确认。
+_SUSPECT_RE = re.compile(
+    r"(^|/)_(?!_)[^/]*\.(json|log|tmp|txt)$"
+    r"|\.(tmp|bak|orig|rej|swp)$"
+    r"|~$"
+    r"|(^|/)\.DS_Store$"
+    r"|(^|/)Thumbs\.db$",
+    re.IGNORECASE,
+)
+_BIG_BYTES = 25 * 1024 * 1024  # 单文件 >25MB 视为异常（疑似漏过的大二进制）
+_MANY = 3000  # 待传文件数过多，疑似 .gitignore 失效（要把 venv/node_modules 推上去）
+
+
+def _pending_files(path: str) -> list[str]:
+    """git add -A 的 dry-run：按 .gitignore 过滤后『将被纳入』的文件清单。"""
+    r = _run(["git", "add", "-A", "-n"], path)
+    will: list[str] = []
+    for ln in (r.stdout or "").splitlines():
+        ln = ln.strip()
+        if ln.startswith("add '") and ln.endswith("'"):
+            will.append(ln[5:-1])
+    return will
+
+
+def scan_suspects(path: str, files: list[str]) -> dict[str, Any]:
+    """挑出疑似临时/超大/数量异常，返回 reasons（空=干净可直传）。"""
+    p = Path(path)
+    temp = [f for f in files if _SUSPECT_RE.search(f)]
+    big: list[str] = []
+    for f in files:
+        try:
+            sz = (p / f).stat().st_size
+        except OSError:
+            continue
+        if sz > _BIG_BYTES:
+            big.append(f"{f} ({sz // 1024 // 1024}MB)")
+    too_many = len(files) > _MANY
+    reasons: list[str] = []
+    if temp:
+        reasons.append(f"疑似临时/脚手架文件 {len(temp)} 个")
+    if big:
+        reasons.append(f"超大文件(>25MB) {len(big)} 个")
+    if too_many:
+        reasons.append(
+            f"待传文件数异常({len(files)}>{_MANY})，疑似 .gitignore 失效"
+        )
+    return {"temp": temp[:50], "big": big[:50],
+            "too_many": too_many, "reasons": reasons}
+
+
 def preview(path: str) -> dict[str, Any]:
     p = Path(path)
     if not p.is_dir():
@@ -51,25 +103,25 @@ def preview(path: str) -> dict[str, Any]:
         r = _run(["git", "init", "-q"], path)
         if r.returncode != 0:
             raise ValueError(f"git init 失败：{r.stderr[:200]}")
-    # dry-run：git 会按 .gitignore 过滤，列出"将被加入"的文件
-    r = _run(["git", "add", "-A", "-n"], path)
-    will: list[str] = []
-    for ln in (r.stdout or "").splitlines():
-        ln = ln.strip()
-        if ln.startswith("add '") and ln.endswith("'"):
-            will.append(ln[5:-1])
+    will = _pending_files(path)
     return {
         "path": str(p),
         "gitignore_added": added,
         "forced_excludes": FORCED,
         "will_upload": will[:1000],
         "will_count": len(will),
+        "suspects": scan_suspects(path, will),
     }
 
 
 def upload(path: str, repo: str, private: bool,
-           token: str, username: str) -> dict[str, Any]:
-    """仅上传/更新【源码 + 说明文档】到 GitHub（不含安装包/Release）。"""
+           token: str, username: str,
+           confirm: bool = False) -> dict[str, Any]:
+    """仅上传/更新【源码 + 说明文档】到 GitHub（不含安装包/Release）。
+
+    上传前自检：发现疑似临时/超大/数量异常文件且未显式 confirm 时，
+    直接返回 needs_confirm（不 commit/不 push），交由用户确认或清理。
+    """
     if not token or not username:
         raise ValueError("未配置 GitHub Token / 用户名")
     # 清洗：用户名/仓库名都只取最后一段、去空白，杜绝拼出
@@ -84,6 +136,21 @@ def upload(path: str, repo: str, private: bool,
     ensure_gitignore(path)
     if not (p / ".git").exists():
         _run(["git", "init", "-q"], path)
+    # 提交前自检：脏东西没确认就拦下，绝不 commit/push
+    pending = _pending_files(path)
+    suspects = scan_suspects(path, pending)
+    if suspects["reasons"] and not confirm:
+        return {
+            "ok": False,
+            "needs_confirm": True,
+            "suspects": suspects,
+            "will_count": len(pending),
+            "message": (
+                "检测到可能不该上传的文件（"
+                + "；".join(suspects["reasons"])
+                + "）。请清理后重试，或确认无误后强制上传。"
+            ),
+        }
     _run(["git", "add", "-A"], path)
     # 确保有提交
     _run(["git", "-c", "user.email=ai-helper@local",

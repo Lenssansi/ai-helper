@@ -157,6 +157,7 @@ class GithubUpload(BaseModel):
     path: str
     repo: str
     private: bool = True
+    confirm: bool = False  # 自检发现疑似脏文件后，用户确认强制上传
 class GithubSaveDoc(BaseModel):
     path: str
     content: str
@@ -449,7 +450,8 @@ def github_upload(
     g = get_github()
     try:
         return github_up.upload(body.path, body.repo, body.private,
-                                g.get("token", ""), g.get("username", ""))
+                                g.get("token", ""), g.get("username", ""),
+                                body.confirm)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
