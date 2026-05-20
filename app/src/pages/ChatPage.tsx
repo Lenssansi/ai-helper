@@ -8,6 +8,7 @@ import {
   listConversations,
   saveConversation,
   setActive,
+  streamChat,
   streamSSE,
   type AgentEvent,
   type ChatMsg,
@@ -15,6 +16,26 @@ import {
   type ProvidersState,
 } from "../api";
 import Markdown from "../components/Markdown";
+
+// 智能路由:判断用户消息是否「明显涉及文件/目录操作」。命中=走文件工具
+// 循环(可读写本机文件,失去 token 流式);否则=走流式 streamChat(保留
+// token-by-token,无文件能力)。宁可漏判(可重述),不要误判(失去流式)。
+const _FILE_INTENT: RegExp[] = [
+  /[A-Za-z]:[\\/]/, // Windows 绝对路径 C:\ D:/
+  /(^|[\s/])~\//, // ~ 主目录
+  // 文件扩展名(粗筛常见的)
+  /\.(bat|cmd|exe|ps1|sh|py|pyw|ipynb|js|ts|tsx|jsx|cjs|mjs|json|md|txt|csv|tsv|log|ya?ml|ini|cfg|conf|html?|css|scss|sass|sql|xml|toml|rs|go|java|c|cpp|h|hpp|kt|dart|lua|rb|php|vue|svelte|astro|zip|tar|gz|rar|7z|pdf|docx?|xlsx?)\b/i,
+  // 中文动作动词 + 文件/目录/脚本类宾语
+  /(读取?|读一?下|读这|打开|创建|新建|新增|写入?|写一?下|编辑|改一?下|修改|删除|删掉|清空|查看|看一?下|看看(这|那)?|列出?|遍历|搜索|搜一?下|找一?下|找出|查一?下|查找|检索|分析|定位|检查|修复|运行|执行|跑一?下|跑个|启动|测试一?下)[一]?[下个的]?(文件|目录|文件夹|脚本|代码|配置|日志|数据|项目|程序|工程)/,
+  /(桌面|下载|文档目录|主目录|工作目录)/,
+  // 英文动词 + 名词
+  /\b(read|write|edit|create|delete|open|list|search|find|fix|run|execute|grep|cat|ls|tail|head)\b[^.\n]*\b(file|files|dir|directory|folder|script|code|repo|project)\b/i,
+];
+
+function looksLikeFileTask(text: string): boolean {
+  if (!text) return false;
+  return _FILE_INTENT.some((re) => re.test(text));
+}
 
 export default function ChatPage() {
   const [ps, setPs] = useState<ProvidersState | null>(null);
@@ -293,9 +314,66 @@ export default function ChatPage() {
     setMessages([...history, { role: "assistant", content: "", events: [] }]);
     setInput("");
     setStreaming(true);
-    // 文件工具永远可用——所有对话走文件模式工具循环
-    // (cfStart 内部会按 webOn 决定是否走智能联网)
-    cfStart(history, "file");
+    // 智能路由:明显涉及文件/目录操作 → 走工具循环(可读写文件,无 token 流);
+    // 否则 → 走流式 streamChat(保留 token-by-token,无文件能力)。
+    if (looksLikeFileTask(text)) {
+      cfStart(history, "file");
+      return;
+    }
+    acRef.current = streamChat(
+      history,
+      {
+        onRoute: (r) =>
+          setMessages((prev) => {
+            const c = [...prev];
+            const last = c[c.length - 1];
+            c[c.length - 1] = { ...last, route: r };
+            return c;
+          }),
+        onWeb: (n) =>
+          setMessages((prev) => {
+            const c = [...prev];
+            const last = c[c.length - 1];
+            c[c.length - 1] = { ...last, web: n };
+            return c;
+          }),
+        onReasoning: (d) =>
+          setMessages((prev) => {
+            const c = [...prev];
+            const last = c[c.length - 1];
+            c[c.length - 1] = {
+              ...last,
+              reasoning: (last.reasoning || "") + d,
+            };
+            return c;
+          }),
+        onDelta: (d) =>
+          setMessages((prev) => {
+            const c = [...prev];
+            const last = c[c.length - 1];
+            c[c.length - 1] = { ...last, content: last.content + d };
+            return c;
+          }),
+        onDone: () => {
+          setStreaming(false);
+          persist(messagesRef.current);
+        },
+        onError: (msg) => {
+          setMessages((prev) => {
+            const c = [...prev];
+            const last = c[c.length - 1];
+            c[c.length - 1] = {
+              ...last,
+              content: last.content + `\n\n> ⚠️ ${msg}`,
+            };
+            return c;
+          });
+          setStreaming(false);
+          persist(messagesRef.current);
+        },
+      },
+      webOn,
+    );
   }
 
   function stop() {
