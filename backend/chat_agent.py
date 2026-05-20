@@ -21,12 +21,12 @@ import userdirs
 RUNS: dict[str, dict[str, Any]] = {}
 
 _SYS_FILE = (
-    "你是 ai-helper 的助手，可用工具读写用户电脑上的文件。"
-    "读/列/搜会自动执行；新建/写/改/删会先弹窗让用户确认。"
-    "相对路径相对会话目录({base})，绝对路径可访问全盘。"
-    "{dirs}"
-    "拿不准目录时先用 list_dir 或 user_dirs 工具确认，不要凭空构造路径。"
-    "做最小必要的改动，完成后用简洁中文说明。一次只调用一个工具。"
+    "你是 ai-helper 的助手，可用工具读写用户电脑上的文件、并可跑命令"
+    "(bat/exe/python 等)。读/列/搜会自动执行；新建/写/改/删/跑命令"
+    "会先弹窗让用户确认。相对路径相对会话目录({base})，绝对路径可"
+    "访问全盘。{dirs}拿不准目录时先用 list_dir 或 user_dirs 工具确认，"
+    "不要凭空构造路径。做最小必要的改动，完成后用简洁中文说明。"
+    "一次只调用一个工具。"
 )
 _SYS_SET = (
     "你是 ai-helper 的设置助手。用户用自然语言要求改设置时，调用相应"
@@ -38,11 +38,15 @@ _SYS_SET = (
 _TOOLSETS = {"file": chatfs, "settings": settings_tools}
 
 
-def _provider() -> OpenAICompatProvider | None:
-    r = get_active_resolved()
+def _provider() -> tuple[OpenAICompatProvider | None, str]:
+    """选支持工具调用的 provider;思考模式下兜底到本地。"""
+    from config import resolve_tool_capable
+    r, err = resolve_tool_capable()
+    if err:
+        return None, err
     if not r or not r.get("api_key"):
-        return None
-    return OpenAICompatProvider(r)
+        return None, "未配置可用 API key"
+    return OpenAICompatProvider(r), ""
 
 
 def _sse(o: dict) -> bytes:
@@ -51,8 +55,9 @@ def _sse(o: dict) -> bytes:
 
 def start(messages: list[dict], base: str,
           mode: str = "file") -> tuple[str | None, str | None]:
-    if _provider() is None:
-        return None, "未配置可用的云端 API（需要支持工具调用的模型）"
+    prov, perr = _provider()
+    if prov is None:
+        return None, perr or "未配置可用 API"
     ts = _TOOLSETS.get(mode, chatfs)
     sysc = (_SYS_SET if mode == "settings"
             else _SYS_FILE.format(base=base or "(默认)",
@@ -70,9 +75,9 @@ def start(messages: list[dict], base: str,
 async def _drive(rid: str) -> AsyncIterator[bytes]:
     run = RUNS[rid]
     ts = run["ts"]
-    prov = _provider()
+    prov, perr = _provider()
     if prov is None:
-        yield _sse({"type": "error", "error": "云端 API 不可用"})
+        yield _sse({"type": "error", "error": perr or "云端 API 不可用"})
         return
     while True:
         while run["bi"] < len(run["batch"]):

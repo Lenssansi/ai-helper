@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   deleteProvider,
+  discoverProviderModels,
   getProviders,
   getUsage,
   resetUsage,
@@ -194,7 +195,14 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
         </div>
       )}
 
-      {!draft && (
+      {!draft && !ps && (
+        <div className="loading-row">
+          <span className="spinner" />
+          <span>加载 API 列表中…</span>
+        </div>
+      )}
+
+      {!draft && ps && (
         <div className="prov-list">
           {ps?.providers.length ? (
             ps.providers.map((p) => {
@@ -335,6 +343,46 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
           </label>
 
           <div className="set-title">预设（模型 + 模式）</div>
+          <div className="cfg-actions" style={{ marginBottom: 6 }}>
+            <button
+              type="button"
+              onClick={async () => {
+                const base = draft.base_url.trim();
+                if (!base) {
+                  setErr("先填 base_url 再发现模型");
+                  return;
+                }
+                setErr("发现中…");
+                try {
+                  const r = await discoverProviderModels(base);
+                  if (!r.models.length) {
+                    setErr(
+                      "未发现模型(地址不可达?或不是 Ollama / OpenAI 兼容接口)"
+                    );
+                    return;
+                  }
+                  // 合并到预设(去重),label = model = 发现到的名字
+                  const exist = new Set(draft.presets.map((p) => p.model));
+                  const add = r.models
+                    .filter((m) => !exist.has(m))
+                    .map((m) => ({ label: m, model: m, extra: "" }));
+                  setDraft({
+                    ...draft,
+                    presets: [
+                      ...draft.presets.filter((p) => p.label || p.model),
+                      ...add,
+                    ],
+                  });
+                  setErr(`已新增 ${add.length} 个预设(去重)`);
+                } catch (e) {
+                  setErr("发现失败：" + (e as Error).message);
+                }
+              }}
+              title="从当前 base_url 自动发现模型列表(Ollama /api/tags 或 OpenAI /v1/models)"
+            >
+              自动发现模型
+            </button>
+          </div>
           {draft.presets.map((r, i) => (
             <div key={i} className="preset-row">
               <input

@@ -151,6 +151,37 @@ export const testProvider = (provider_id: string, preset_label: string) =>
     preset_label,
   });
 
+export const discoverProviderModels = (base_url: string) =>
+  sendJSON<{ models: string[] }>("/api/providers/discover", "POST", {
+    base_url,
+  });
+
+export interface LogsResp {
+  text: string;
+  path: string;
+  size: number;
+  max_total: number;
+}
+export const getLogs = (lines = 200) =>
+  getJSON<LogsResp>("/api/logs?lines=" + lines);
+export const clearLogs = () => sendJSON<LogsResp>("/api/logs/clear", "POST");
+
+export interface GitStatusResp {
+  installed: boolean;
+  path?: string;
+  version?: string;
+  error?: string;
+}
+export const getGitStatus = () => getJSON<GitStatusResp>("/api/git/status");
+export const installGit = (url: string, install_dir: string) =>
+  sendJSON<{
+    ok: boolean;
+    path?: string;
+    note?: string;
+    error?: string;
+    installer_log_tail?: string;
+  }>("/api/git/install", "POST", { url, install_dir });
+
 export const getTheme = () => getJSON<{ theme: ThemeMode }>("/api/theme");
 export const setTheme = (theme: ThemeMode) =>
   sendJSON<{ theme: ThemeMode }>("/api/theme", "POST", { theme });
@@ -264,6 +295,7 @@ export interface AgentSessionFull extends AgentSessionSummary {
   checkpoint: string | null;
   transcript: AgentEvent[];
   status: string;
+  web_on?: boolean;
 }
 export const listAgentSessions = () =>
   getJSON<AgentSessionSummary[]>("/api/agent/sessions");

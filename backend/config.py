@@ -34,15 +34,19 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 
 # DeepSeek 开箱预设（已据官方文档 2026-04：思考靠 thinking 参数，模型 v4-flash/pro）
 def _deepseek_presets() -> list[dict[str, Any]]:
+    # supports_tools: false 标记该预设无法使用 function-calling
+    # (DeepSeek 思考模式当前不支持工具)。agent/file 模式遇到会按规则兜底
     return [
         {"label": "V4 Flash·普通", "model": "deepseek-v4-flash",
          "extra_body": {"thinking": {"type": "disabled"}}},
         {"label": "V4 Flash·思考", "model": "deepseek-v4-flash",
-         "extra_body": {"thinking": {"type": "enabled"}}},
+         "extra_body": {"thinking": {"type": "enabled"}},
+         "supports_tools": False},
         {"label": "V4 Pro·普通", "model": "deepseek-v4-pro",
          "extra_body": {"thinking": {"type": "disabled"}}},
         {"label": "V4 Pro·思考", "model": "deepseek-v4-pro",
-         "extra_body": {"thinking": {"type": "enabled"}}},
+         "extra_body": {"thinking": {"type": "enabled"}},
+         "supports_tools": False},
     ]
 
 
@@ -65,7 +69,7 @@ DEFAULTS: dict[str, Any] = {
     "token": "",
     "providers": [],
     "active": {"provider_id": "", "preset_label": ""},
-    "theme": "dark",  # dark | light | system
+    "theme": "light",  # dark | light | system —— 首次安装默认亮色
     # 高危确认档：all=每个改动都确认；risky=仅删/跑命令/回滚/动安全边界
     # 才确认（默认，新建/写/改静默执行，有 git 检查点兜底）；none=全不确认
     "confirm_level": "risky",
@@ -93,6 +97,88 @@ def _ensure_token(s: dict[str, Any]) -> bool:
         s["token"] = secrets.token_urlsafe(24)
         return True
     return False
+
+
+OLLAMA_PID = "__ollama__"  # 历史值,仅用于迁移老配置时识别
+
+
+_OLLAMA_CACHE: dict[str, Any] = {"ts": 0.0, "base": "", "models": []}
+
+
+def _ollama_models(base_url: str) -> list[str]:
+    """列指定 base_url 的 Ollama 模型;短超时 + 8s 缓存。"""
+    base = (base_url or "").rstrip("/")
+    now = time.time()
+    if _OLLAMA_CACHE["base"] == base and now - _OLLAMA_CACHE["ts"] < 8:
+        return _OLLAMA_CACHE["models"]
+    ms: list[str] = []
+    try:
+        r = httpx.get(f"{base}/api/tags", timeout=1.5)
+        if r.status_code == 200:
+            ms = [m.get("name", "")
+                  for m in r.json().get("models", [])
+                  if m.get("name")]
+    except (httpx.HTTPError, ValueError, KeyError):
+        ms = []
+    _OLLAMA_CACHE.update(ts=now, base=base, models=ms)
+    return ms
+
+
+def _default_local_provider(base_url: str = "http://localhost:11434",
+                              fallback_model: str = "qwen2.5:3b"
+                              ) -> dict[str, Any]:
+    """首次种「本地模型」普通 provider:用本机已装 Ollama 模型做预设,
+    没装则用 fallback_model 占位。用户随后可自己改 base_url/加模型。"""
+    models = _ollama_models(base_url)
+    if not models:
+        models = [fallback_model]
+    return {
+        "id": uuid.uuid4().hex[:12],
+        "name": "本地模型",
+        "format": "openai_compat",
+        "base_url": base_url,
+        "api_key": "local",  # 占位,本地不验证 key
+        "capability": "本机模型:免费、隐私;可改地址/加预设;适合简单/离线",
+        "presets": [{"label": m, "model": m, "extra_body": {}}
+                    for m in models],
+    }
+
+
+def _ensure_local_provider(s: dict[str, Any]) -> bool:
+    """确保 providers 里有一个『本地模型』入口(原合成 __ollama__ 的接班)。"""
+    has_local = any(
+        ("11434" in p.get("base_url", ""))
+        or p.get("name") in ("本地模型", "本地 Ollama")
+        for p in s.get("providers", [])
+    )
+    changed = False
+    if not has_local:
+        oc = s.get("ollama", {})
+        local = _default_local_provider(
+            oc.get("base_url", "http://localhost:11434"),
+            oc.get("model", "qwen2.5:3b"),
+        )
+        s.setdefault("providers", []).append(local)
+        changed = True
+    # 老配置 active 还指向 __ollama__ 的,迁到新本地 provider
+    if s.get("active", {}).get("provider_id") == OLLAMA_PID:
+        target = next(
+            (p for p in s["providers"]
+             if "11434" in p.get("base_url", "")
+             or p.get("name") in ("本地模型", "本地 Ollama")),
+            None,
+        )
+        if target:
+            preset_label = s["active"].get("preset_label", "")
+            # 若旧 preset_label 不在新 provider 预设里,退化到第一个
+            valid_labels = {x["label"] for x in target.get("presets", [])}
+            if preset_label not in valid_labels:
+                preset_label = (target["presets"][0]["label"]
+                                if target.get("presets") else "")
+            s["active"] = {"provider_id": target["id"],
+                            "preset_label": preset_label}
+            changed = True
+    return changed
 
 
 def _migrate(s: dict[str, Any], raw: dict[str, Any]) -> bool:
@@ -169,6 +255,8 @@ def load_settings() -> dict[str, Any]:
         dirty = True
     if _migrate(s, raw):
         dirty = True
+    if _ensure_local_provider(s):
+        dirty = True
     # 回填：早于 P3 迁移过的 provider 没 capability，DeepSeek 给默认值
     for p in s.get("providers", []):
         if "capability" not in p:
@@ -230,85 +318,36 @@ def mask_provider(p: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-OLLAMA_PID = "__ollama__"
-
-
-_OLLAMA_CACHE: dict[str, Any] = {"ts": 0.0, "base": "", "models": []}
-
-
-def _ollama_models(base_url: str) -> list[str]:
-    """列本机已安装的 Ollama 模型（GET /api/tags）。短超时 + 8s 缓存，
-    Ollama 没开/超时则安全降级返回缓存或 []，绝不拖慢页面。"""
+def discover_models(base_url: str) -> list[str]:
+    """给前端「自动发现」按钮:先试 Ollama /api/tags,再试 OpenAI /v1/models。"""
     base = (base_url or "").rstrip("/")
-    now = time.time()
-    # 命中缓存（含「Ollama 没开」的负缓存）就直接用，8s 内不再探测
-    if _OLLAMA_CACHE["base"] == base and now - _OLLAMA_CACHE["ts"] < 8:
-        return _OLLAMA_CACHE["models"]
-    ms: list[str] = []
+    if not base:
+        return []
+    ms = _ollama_models(base)
+    if ms:
+        return ms
+    # 兜底:OpenAI-兼容 /v1/models
     try:
-        r = httpx.get(f"{base}/api/tags", timeout=1.5)
+        url = base if base.endswith("/v1") else base + "/v1"
+        r = httpx.get(f"{url}/models", timeout=3.0)
         if r.status_code == 200:
-            ms = [m.get("name", "")
-                  for m in r.json().get("models", [])
-                  if m.get("name")]
+            data = r.json().get("data") or []
+            return [m.get("id", "") for m in data if m.get("id")]
     except (httpx.HTTPError, ValueError, KeyError):
-        ms = []
-    _OLLAMA_CACHE.update(ts=now, base=base, models=ms)
-    return ms
-
-
-def _ollama_synthetic() -> dict[str, Any]:
-    oc = load_settings()["ollama"]
-    base = oc.get("base_url", "http://localhost:11434")
-    configured = oc.get("model", "qwen2.5:3b")
-    models = list(_ollama_models(base))
-    # 配置里那个始终在列表里（且排第一），避免它没装时无法选
-    if configured and configured not in models:
-        models.insert(0, configured)
-    if not models:
-        models = [configured]
-    return {
-        "id": OLLAMA_PID,
-        "name": "本地 Ollama",
-        "format": "openai_compat",
-        "base_url": base,
-        "api_key_set": True,  # 本地无需 key
-        "capability": ("本地模型：免费、隐私；可在此直接切换本机已安装"
-                       "的任意 Ollama 模型"),
-        "presets": [{"label": m, "model": m, "extra_body": {}}
-                    for m in models],
-        "builtin": True,  # 前端据此禁用编辑/删除
-    }
+        pass
+    return []
 
 
 def public_state() -> dict[str, Any]:
     s = load_settings()
     provs = [mask_provider(p) for p in s["providers"]]
-    provs.append(_ollama_synthetic())  # 合成「本地 Ollama」可选项
     return {"providers": provs, "active": s["active"]}
-
-
-def _resolve_ollama(model: str | None = None) -> dict[str, Any]:
-    oc = load_settings()["ollama"]
-    m = (model or "").strip() or oc.get("model", "qwen2.5:3b")
-    return {
-        "format": "openai_compat",
-        "base_url": oc.get("base_url", "http://localhost:11434"),
-        "api_key": "ollama",
-        "model": m,
-        "extra_body": {},
-        "provider_id": OLLAMA_PID,
-        "provider_name": "本地 Ollama",
-        "preset_label": m,
-    }
 
 
 def get_active_resolved() -> dict[str, Any] | None:
     """供 /api/chat：返回 {format,base_url,api_key,model,extra_body}。"""
     s = load_settings()
     act = s.get("active", {})
-    if act.get("provider_id") == OLLAMA_PID:
-        return _resolve_ollama(act.get("preset_label"))
     prov = _find(s["providers"], act.get("provider_id", ""))
     if not prov:
         return None
@@ -333,8 +372,6 @@ def get_active_resolved() -> dict[str, Any] | None:
 
 def resolve_choice(provider_id: str, preset_label: str) -> dict[str, Any] | None:
     """按指定 provider+preset 解析（供路由器选择后使用）。"""
-    if provider_id == OLLAMA_PID:
-        return _resolve_ollama(preset_label)
     s = load_settings()
     prov = _find(s["providers"], provider_id)
     if not prov:
@@ -356,6 +393,54 @@ def resolve_choice(provider_id: str, preset_label: str) -> dict[str, Any] | None
         "provider_name": prov.get("name", ""),
         "preset_label": preset.get("label", ""),
     }
+
+
+def _preset_in(prov: dict, label: str) -> dict | None:
+    return next((p for p in prov.get("presets", [])
+                 if p["label"] == label), None)
+
+
+def resolve_tool_capable() -> tuple[dict[str, Any] | None, str]:
+    """选一个支持工具调用的 provider+preset:
+    优先 active(如果支持) → 否则若 auto_route 开,选支持工具的其它 provider
+    (优先本地模型) → 否则返回错误字符串。返回 (resolved, error_msg)。"""
+    r = get_active_resolved()
+    if not r:
+        return None, "未配置可用 API"
+    s = load_settings()
+    prov = _find(s["providers"], r.get("provider_id", ""))
+    if prov:
+        ps = _preset_in(prov, r.get("preset_label", ""))
+        if ps is None or ps.get("supports_tools", True):
+            return r, ""
+    # 当前不支持工具,需要 fallback
+    if not s.get("brain", {}).get("auto_route", True):
+        return None, (
+            "当前预设(可能是思考模式)不支持工具调用。"
+            "请在设置页启用「自动路由」,或换一个支持工具的预设/"
+            "添加本地模型(如 Ollama)。"
+        )
+    # 找候选:不同于当前的 provider,有任一预设 supports_tools != false
+    cur_id = r.get("provider_id", "")
+    candidates: list[tuple[int, str, str]] = []  # (优先级, pid, label)
+    for p in s["providers"]:
+        if p["id"] == cur_id:
+            continue
+        is_local = "11434" in p.get("base_url", "")
+        for pr in p.get("presets", []):
+            if pr.get("supports_tools", True):
+                # 本地模型最优,其它 cloud 次之
+                candidates.append((0 if is_local else 1, p["id"], pr["label"]))
+                break  # 每个 provider 拿一个就够
+    candidates.sort()
+    for _, pid, label in candidates:
+        cand = resolve_choice(pid, label)
+        if cand:
+            return cand, ""
+    return None, (
+        "没有可用的工具支持后端。请在 API 管理页添加一个支持工具调用的"
+        "provider(如本机 Ollama),或换一个支持工具的当前预设。"
+    )
 
 
 def providers_for_router() -> list[dict[str, Any]]:

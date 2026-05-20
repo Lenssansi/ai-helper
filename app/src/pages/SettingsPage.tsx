@@ -8,6 +8,12 @@ import {
   getWorkspace,
   hasNativePicker,
   pickFolder,
+  getLogs,
+  clearLogs,
+  getGitStatus,
+  installGit,
+  type LogsResp,
+  type GitStatusResp,
   githubGenDoc,
   githubPreview,
   githubSaveDoc,
@@ -87,6 +93,16 @@ export default function SettingsPage({
   const [docDraft, setDocDraft] = useState("");
   const [ghPrev, setGhPrev] = useState<GithubPreview | null>(null);
   const [ghMsg, setGhMsg] = useState("");
+  const [logs, setLogs] = useState<LogsResp | null>(null);
+  const [logsMsg, setLogsMsg] = useState("");
+  const [gitSt, setGitSt] = useState<GitStatusResp | null>(null);
+  // 用户可改:留两个常见预填
+  const [gitUrl, setGitUrl] = useState(
+    "https://github.com/git-for-windows/git/releases/latest"
+  );
+  const [gitDir, setGitDir] = useState("");
+  const [gitMsg, setGitMsg] = useState("");
+  const [installing, setInstalling] = useState(false);
 
   async function refreshOllama() {
     try {
@@ -105,6 +121,9 @@ export default function SettingsPage({
       .catch(() => void 0);
     getConfirmLevel()
       .then((r) => setConfirmLv(r.confirm_level))
+      .catch(() => void 0);
+    getGitStatus()
+      .then(setGitSt)
       .catch(() => void 0);
     getBrain()
       .then((r) => setBrain(r.brain))
@@ -329,6 +348,85 @@ export default function SettingsPage({
           Agent 只能在「授权根目录」内读写，越界硬禁止。当前工作目录须是其中
           某个目录、且为 git 仓库（用于检查点/回滚）。
         </div>
+        {/* Git 检测:没装就引导安装 */}
+        {gitSt && !gitSt.installed && canSettings && (
+          <div className="cfg-note warn" style={{ marginBottom: 8 }}>
+            <div>
+              ⚠ 未检测到 Git。Agent 需要 Git 做检查点/回滚才能用。
+              下面填好下载链接与安装目录,点「下载并静默安装」一次搞定。
+            </div>
+            <div className="preset-row" style={{ marginTop: 8 }}>
+              <input
+                value={gitUrl}
+                onChange={(e) => setGitUrl(e.target.value)}
+                placeholder="Git for Windows 安装包 URL(可填官方/镜像直链)"
+              />
+            </div>
+            <div className="muted" style={{ marginTop: 4 }}>
+              默认:GitHub 官方;国内可换清华 TUNA 镜像直链,如
+              https://mirrors.tuna.tsinghua.edu.cn/github-release/git-for-windows/git/...exe
+            </div>
+            <div className="preset-row" style={{ marginTop: 8 }}>
+              <input
+                value={gitDir}
+                onChange={(e) => setGitDir(e.target.value)}
+                placeholder="安装目录(留空则用系统默认 C:\Program Files\Git)"
+              />
+              {hasNativePicker() && (
+                <button
+                  onClick={async () => {
+                    const p = await pickFolder();
+                    if (p) setGitDir(p);
+                  }}
+                >
+                  浏览…
+                </button>
+              )}
+              <button
+                disabled={installing || !gitUrl.trim()}
+                onClick={async () => {
+                  if (!confirm("将下载并静默安装 Git。耗时可能几分钟,期间请勿关闭。继续?"))
+                    return;
+                  setInstalling(true);
+                  setGitMsg("下载+安装中,请耐心等待…");
+                  try {
+                    const r = await installGit(gitUrl.trim(), gitDir.trim());
+                    if (r.ok) {
+                      setGitMsg(
+                        "✓ Git 已装" +
+                          (r.path ? ` 于 ${r.path}` : "") +
+                          (r.note ? `(${r.note})` : "")
+                      );
+                      try {
+                        setGitSt(await getGitStatus());
+                      } catch {
+                        /* ignore */
+                      }
+                    } else {
+                      setGitMsg("✖ " + (r.error || "安装失败"));
+                    }
+                  } catch (e) {
+                    setGitMsg("✖ " + (e as Error).message);
+                  } finally {
+                    setInstalling(false);
+                  }
+                }}
+              >
+                {installing ? "安装中…" : "下载并静默安装"}
+              </button>
+            </div>
+            {gitMsg && (
+              <div className="cfg-msg" style={{ marginTop: 6 }}>
+                {gitMsg}
+              </div>
+            )}
+          </div>
+        )}
+        {gitSt && gitSt.installed && (
+          <div className="muted" style={{ marginBottom: 8 }}>
+            Git: ✓ {gitSt.version || gitSt.path}
+          </div>
+        )}
         <div className="muted">授权根目录白名单：</div>
         <div className="toggles" style={{ margin: "6px 0" }}>
           {wsc?.allowed_roots.length ? (
@@ -775,6 +873,71 @@ export default function SettingsPage({
         )}
       </section>
       )}
+
+      <section className="set-block">
+        <div className="chat-head">
+          <div className="set-title">日志</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              className="cfg-toggle"
+              onClick={async () => {
+                setLogsMsg("加载中…");
+                try {
+                  const r = await getLogs(300);
+                  setLogs(r);
+                  setLogsMsg("");
+                } catch (e) {
+                  setLogsMsg((e as Error).message);
+                }
+              }}
+            >
+              查看(最近 300 行)
+            </button>
+            {canSettings && logs && (
+              <button
+                className="cfg-toggle"
+                onClick={async () => {
+                  if (!confirm("清空全部日志?(滚动文件一并清)")) return;
+                  try {
+                    setLogs(await clearLogs());
+                    setLogsMsg("已清空");
+                  } catch (e) {
+                    setLogsMsg((e as Error).message);
+                  }
+                }}
+              >
+                清空
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="muted" style={{ marginTop: 6 }}>
+          日志文件:5MB × 2 份滚动(总上限 ~10MB,超过最早自动覆盖)。
+          {logs &&
+            ` 当前 ${Math.round(logs.size / 1024)}KB / 上限 ${Math.round(
+              logs.max_total / 1024 / 1024
+            )}MB · ${logs.path}`}
+        </div>
+        {logs && (
+          <pre
+            style={{
+              maxHeight: 360,
+              overflow: "auto",
+              background: "var(--panel-2)",
+              border: "1px solid var(--border-2)",
+              borderRadius: 7,
+              padding: 10,
+              fontSize: 12,
+              marginTop: 8,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+            }}
+          >
+            {logs.text || "(空)"}
+          </pre>
+        )}
+        <div className="cfg-msg">{logsMsg}</div>
+      </section>
     </div>
   );
 }

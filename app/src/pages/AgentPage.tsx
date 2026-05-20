@@ -30,6 +30,7 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
   const [status, setStatus] = useState<Status>("idle");
   const [runId, setRunId] = useState("");
   const [editArgs, setEditArgs] = useState("");
+  const [webOn, setWebOn] = useState(true);
   const acRef = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const runIdRef = useRef("");
@@ -70,6 +71,7 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
       setRunId(s.id);
       setEvents(s.transcript || []);
       setStatus(s.status === "awaiting" ? "awaiting" : "done");
+      setWebOn(s.web_on !== false); // 默认开
       const last = (s.transcript || [])[s.transcript.length - 1];
       if (s.status === "awaiting" && last?.args)
         setEditArgs(JSON.stringify(last.args, null, 2));
@@ -146,8 +148,8 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
     setStatus("running");
     const path = hasRun ? "/api/agent/continue" : "/api/agent/start";
     const body = hasRun
-      ? { run_id: runIdRef.current, task: t }
-      : { task: t };
+      ? { run_id: runIdRef.current, task: t, web: webOn }
+      : { task: t, web: webOn };
     acRef.current = streamSSE(path, body, onEvent, () => {
       setStatus((s) => (s === "running" ? "idle" : s));
       refreshSessions();
@@ -259,6 +261,13 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
               </option>
             ))}
           </select>
+          <button
+            className={"cfg-toggle" + (webOn ? " on" : "")}
+            onClick={() => setWebOn((v) => !v)}
+            title="允许 Agent 调 web_search 工具查在线资料(智能联网由模型决定何时搜)"
+          >
+            🌐 联网{webOn ? "·开" : "·关"}
+          </button>
           <button onClick={newSession} title="清空并开新会话">
             ＋ 新会话
           </button>

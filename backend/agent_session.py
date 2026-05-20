@@ -26,6 +26,30 @@ from store import get_agent, save_agent
 
 RUNS: dict[str, dict[str, Any]] = {}
 
+_PREAMBLE_HEADS = ("我们先", "我先", "我会", "让我先", "让我", "先来",
+                   "先看", "先定位", "先分析", "先检查", "先读")
+
+
+def _looks_like_preamble(content: str | None) -> bool:
+    """开头像"我会先/我们先/让我先…"且字数短 → 视为只铺垫没动手。"""
+    s = (content or "").strip()
+    if not s or len(s) > 220:
+        return False
+    head = s[:30]
+    return any(kw in head for kw in _PREAMBLE_HEADS)
+
+
+def _has_tools_since_last_user(msgs: list[dict]) -> bool:
+    """判断当前 user 轮次之后是否已调过工具——避免对收尾总结也 nudge。"""
+    last_user_idx = -1
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "user":
+            last_user_idx = i
+            break
+    if last_user_idx < 0:
+        return False
+    return any(m.get("role") == "tool" for m in msgs[last_user_idx:])
+
 
 def _persist(rid: str) -> None:
     run = RUNS.get(rid)
@@ -38,6 +62,7 @@ def _persist(rid: str) -> None:
         "messages": run.get("messages", []),
         "transcript": run.get("transcript", []),
         "status": run.get("status", "done"),
+        "web_on": run.get("web_on", True),
     })
 
 
@@ -57,6 +82,8 @@ def _ensure_loaded(rid: str) -> bool:
         "status": s.get("status", "done"),
         "title": s.get("title", "(未命名)"),
         "cwd": s.get("cwd", ""),
+        "web_on": s.get("web_on", True),
+        "nudged_this_turn": False,
     }
     return True
 
@@ -74,18 +101,26 @@ _SYS = (
     "凡是涉及第三方库/框架/API 的用法、版本差异、报错信息、或任何你不确定"
     "的最新信息，务必先调用 web_search 查官方文档/资料再动手，不要凭记忆"
     "硬写。{dirs}涉及用户目录时用上述真实路径或 user_dirs 工具，别猜。"
-    "完成后用简洁中文说明你做了什么。当前工作目录：{cwd}"
+    "【铁律】禁止只输出『我们先来…』『我会先…』『让我先…』这种铺垫性"
+    "文字然后就停下——要么立刻调用工具开始干活，要么任务真完成了再用"
+    "简洁中文给出最终总结。**只用纯文本回复 = 你的本次响应结束**，"
+    "不要把它当成『准备动手』的开场白。"
+    "当前工作目录：{cwd}"
 )
 
 
-def _provider() -> OpenAICompatProvider | None:
-    r = get_active_resolved()
+def _provider() -> tuple[OpenAICompatProvider | None, str]:
+    """选一个【支持工具调用】的 provider;思考模式自动兜底到本地。"""
+    from config import resolve_tool_capable
+    r, err = resolve_tool_capable()
+    if err:
+        return None, err
     if not r or not r.get("api_key"):
-        return None
-    return OpenAICompatProvider(r)
+        return None, "未配置可用 API key"
+    return OpenAICompatProvider(r), ""
 
 
-def start_run(task: str) -> tuple[str | None, str | None]:
+def start_run(task: str, web: bool = True) -> tuple[str | None, str | None]:
     """返回 (run_id, error)。校验工作区与 API。"""
     ws = get_workspace()
     cwd = (ws.get("cwd") or "").strip()
@@ -96,8 +131,9 @@ def start_run(task: str) -> tuple[str | None, str | None]:
     import os
     if not os.path.isdir(os.path.join(cwd, ".git")):
         return None, f"工作目录不是 git 仓库：{cwd}（需要 git 安全网，请先 git init）"
-    if _provider() is None:
-        return None, "未配置可用的云端 API（Agent 需要支持工具调用的模型）"
+    prov, perr = _provider()
+    if prov is None:
+        return None, perr or "未配置可用的云端 API"
     sys_content = _SYS.format(cwd=cwd, dirs=userdirs.prompt_hint())
     skills = build_injection(get_skills_enabled())
     if skills:
@@ -115,6 +151,8 @@ def start_run(task: str) -> tuple[str | None, str | None]:
         "status": "running",  # running | awaiting | done | error
         "title": (task.strip()[:40] or "(未命名)"),
         "cwd": cwd,
+        "nudged_this_turn": False,  # 反铺垫骤停:每轮最多 nudge 一次
+        "web_on": bool(web),       # 是否允许 Agent 调 web_search 工具
     }
     _persist(rid)
     return rid, None
@@ -126,10 +164,10 @@ def _sse(obj: dict) -> bytes:
 
 async def _drive(rid: str) -> AsyncIterator[bytes]:
     run = RUNS[rid]
-    prov = _provider()
+    prov, perr = _provider()
     if prov is None:
         run["status"] = "error"
-        yield _rec(run, {"type": "error", "error": "云端 API 不可用"})
+        yield _rec(run, {"type": "error", "error": perr or "云端 API 不可用"})
         _persist(rid)
         return
 
@@ -173,8 +211,13 @@ async def _drive(rid: str) -> AsyncIterator[bytes]:
             run["bi"] += 1
 
         # 2) batch 处理完，问模型下一步
+        all_tools = tool_specs()
+        if not run.get("web_on", True):
+            # 关闭联网 → 不暴露 web_search 工具给模型
+            all_tools = [t for t in all_tools
+                         if t["function"]["name"] != "web_search"]
         try:
-            resp = await prov.tool_complete(run["messages"], tool_specs())
+            resp = await prov.tool_complete(run["messages"], all_tools)
         except Exception as e:  # noqa: BLE001
             run["status"] = "error"
             yield _rec(run, {"type": "error",
@@ -195,6 +238,19 @@ async def _drive(rid: str) -> AsyncIterator[bytes]:
         run["messages"].append(asst)
 
         if not resp["tool_calls"]:
+            # 反"只说不做"骤停:首轮零工具且像铺垫 → 自动 nudge 一次
+            if (not run.get("nudged_this_turn")
+                    and _looks_like_preamble(resp["content"])
+                    and not _has_tools_since_last_user(run["messages"])):
+                run["nudged_this_turn"] = True
+                run["messages"].append({
+                    "role": "user",
+                    "content": ("请直接调用工具开始,不要只说『我会先…』"
+                                "『让我先…』就停下。"),
+                })
+                yield _rec(run, {"type": "info",
+                                 "content": "(检测到只铺垫未动手,已自动续一刀)"})
+                continue
             run["status"] = "done"
             if resp["content"]:
                 yield _rec(run, {"type": "answer",
@@ -208,8 +264,8 @@ async def _drive(rid: str) -> AsyncIterator[bytes]:
         # 回到循环顶部处理新 batch
 
 
-async def stream_start(task: str) -> AsyncIterator[bytes]:
-    rid, err = start_run(task)
+async def stream_start(task: str, web: bool = True) -> AsyncIterator[bytes]:
+    rid, err = start_run(task, web=web)
     if err:
         yield _sse({"type": "error", "error": err})
         return
@@ -241,7 +297,8 @@ async def stream_respond(
         yield ev
 
 
-async def stream_continue(rid: str, task: str) -> AsyncIterator[bytes]:
+async def stream_continue(rid: str, task: str,
+                            web: bool = True) -> AsyncIterator[bytes]:
     """同一 run 追加一轮指令，复用上下文与会话起点检查点（迭代式）。"""
     if not _ensure_loaded(rid):
         yield _sse({"type": "error",
@@ -257,6 +314,8 @@ async def stream_continue(rid: str, task: str) -> AsyncIterator[bytes]:
     run["batch"] = []
     run["bi"] = 0
     run["status"] = "running"
+    run["nudged_this_turn"] = False
+    run["web_on"] = bool(web)
     _persist(rid)
     async for ev in _drive(rid):
         yield ev

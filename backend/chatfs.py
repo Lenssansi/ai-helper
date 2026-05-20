@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
 MAX_READ = 200_000
+CMD_TIMEOUT = 120
 
 
 class FsError(Exception):
@@ -124,6 +126,33 @@ def edit_file(path: str, old: str, new: str, base: str = "") -> dict:
     return {"path": str(f), "replaced": True}
 
 
+def run_command(command: str, cwd: str = "",
+                base: str = "") -> dict[str, Any]:
+    """跑命令行(bat/exe/python 等),供普通对话也能让 AI 执行脚本。
+    高危——执行前会弹用户确认。无白名单约束(普通对话本就全盘可访问)。"""
+    if not command or not command.strip():
+        raise FsError("命令为空")
+    work_dir = (cwd or base or os.getcwd())
+    try:
+        if not Path(work_dir).is_dir():
+            work_dir = os.getcwd()
+    except OSError:
+        work_dir = os.getcwd()
+    try:
+        r = subprocess.run(
+            command, shell=True, cwd=work_dir, capture_output=True,
+            text=True, timeout=CMD_TIMEOUT, errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        raise FsError(f"命令超时(>{CMD_TIMEOUT}s)") from None
+    return {
+        "exit_code": r.returncode,
+        "stdout": (r.stdout or "")[-8000:],
+        "stderr": (r.stderr or "")[-4000:],
+        "cwd": work_dir,
+    }
+
+
 def delete_path(path: str, base: str = "") -> dict:
     p = _p(path, base)
     if not p.exists():
@@ -145,6 +174,7 @@ REGISTRY = {
     "write_file": (write_file, True),
     "edit_file": (edit_file, True),
     "delete_path": (delete_path, True),
+    "run_command": (run_command, True),
 }
 
 
@@ -194,4 +224,10 @@ def tool_specs() -> list[dict[str, Any]]:
            ["path", "old", "new"]),
         fn("delete_path", "删除文件或目录",
            {"path": {"type": S}}, ["path"]),
+        fn("run_command",
+           "在指定目录执行 shell 命令(可跑 bat/exe/python 等任意可执行文件;"
+           "高危,会先弹用户确认)",
+           {"command": {"type": S},
+            "cwd": {"type": S, "description": "工作目录(可空,默认会话目录)"}},
+           ["command"]),
     ]

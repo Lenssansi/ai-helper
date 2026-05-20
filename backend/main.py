@@ -72,6 +72,10 @@ from store import (
 
 APP_VERSION = "0.2.0-p2"
 
+# 日志一次性初始化:5MB×2 滚动到 data/logs/ai-helper.log;接管 uvicorn
+import applog
+applog.setup_logging()
+
 app = FastAPI(title="ai-helper", version=APP_VERSION)
 
 # 开发期前端跑在 Vite(5173)，与后端(8756)跨端口，需放行本地源。
@@ -126,6 +130,10 @@ class ActivePatch(BaseModel):
 class ProviderTestReq(BaseModel):
     provider_id: str
     preset_label: str = ""
+
+
+class ProviderDiscoverReq(BaseModel):
+    base_url: str
 
 
 class ThemePatch(BaseModel):
@@ -183,6 +191,7 @@ class WorkspacePatch(BaseModel):
 
 class AgentStart(BaseModel):
     task: str
+    web: bool = True  # 是否允许 Agent 调 web_search 工具
 
 
 class AgentRespond(BaseModel):
@@ -194,6 +203,7 @@ class AgentRespond(BaseModel):
 class AgentContinue(BaseModel):
     run_id: str
     task: str
+    web: bool = True
 
 
 class AgentRollback(BaseModel):
@@ -246,6 +256,16 @@ def post_active(
     caller: Caller = Depends(require_permission("api_switch")),  # noqa: ARG001
 ) -> dict:
     return set_active(patch.provider_id, patch.preset_label)
+
+
+@app.post("/api/providers/discover")
+def discover_provider_models(
+    req: ProviderDiscoverReq,
+    caller: Caller = Depends(get_caller),  # noqa: ARG001
+) -> dict:
+    """给前端「自动发现模型」按钮:探测 base_url 的可用模型列表。"""
+    from config import discover_models
+    return {"models": discover_models(req.base_url)}
 
 
 @app.post("/api/providers/test")
@@ -315,6 +335,115 @@ def read_usage(caller: Caller = Depends(get_caller)) -> dict:  # noqa: ARG001
     return usage.get_usage()
 
 
+# ---------- Git 检测 + 安装引导 ----------
+
+class GitInstallReq(BaseModel):
+    url: str
+    install_dir: str = ""
+
+
+@app.get("/api/git/status")
+def git_status(caller: Caller = Depends(get_caller)) -> dict:  # noqa: ARG001
+    import shutil
+    import subprocess
+    p = shutil.which("git")
+    if not p:
+        return {"installed": False}
+    try:
+        r = subprocess.run([p, "--version"], capture_output=True,
+                            text=True, timeout=5, errors="replace")
+        return {"installed": True, "path": p,
+                "version": (r.stdout or "").strip()}
+    except Exception as e:  # noqa: BLE001
+        return {"installed": False, "error": str(e)}
+
+
+@app.post("/api/git/install")
+async def git_install(
+    req: GitInstallReq,
+    caller: Caller = Depends(require_permission("settings")),
+) -> dict:
+    _local_only(caller)
+    if not req.url.strip():
+        return {"ok": False, "error": "缺少下载链接"}
+    import shutil
+    import subprocess
+
+    tmp_dir = PROJECT_ROOT / "data" / "tmp"
+    try:
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return {"ok": False, "error": f"无法建临时目录:{e}"}
+    fn = (req.url.rsplit("/", 1)[-1].split("?")[0]
+          or "git-installer.exe")
+    target = tmp_dir / fn
+    try:
+        import httpx
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(600.0, connect=30.0),
+            follow_redirects=True,
+        ) as c:
+            async with c.stream("GET", req.url) as resp:
+                if resp.status_code != 200:
+                    return {"ok": False,
+                            "error": f"下载失败 HTTP {resp.status_code}"}
+                with open(target, "wb") as f:
+                    async for chunk in resp.aiter_bytes(256 * 1024):
+                        f.write(chunk)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"下载失败:{e}"}
+
+    # Inno Setup 静默参数
+    args = [str(target), "/VERYSILENT", "/SUPPRESSMSGBOXES",
+            "/NORESTART", "/NOCANCEL", "/SP-"]
+    if req.install_dir.strip():
+        args.append(f"/DIR={req.install_dir.strip()}")
+    try:
+        r = subprocess.run(args, capture_output=True, text=True,
+                            timeout=900, errors="replace")
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "安装超时(>15min)"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"安装失败:{e}"}
+
+    # 安装后:既看 PATH,也补查 install_dir/cmd 与默认路径
+    candidate_paths = []
+    if req.install_dir.strip():
+        candidate_paths.append(
+            str(Path(req.install_dir) / "cmd" / "git.exe")
+        )
+    candidate_paths += [
+        r"C:\Program Files\Git\cmd\git.exe",
+        r"C:\Program Files (x86)\Git\cmd\git.exe",
+    ]
+    found = shutil.which("git") or next(
+        (p for p in candidate_paths if Path(p).is_file()), None
+    )
+    return {
+        "ok": bool(found),
+        "path": found or "",
+        "note": ("Git 已装,但当前后端进程 PATH 还没刷新——重启 ai-helper "
+                  "应能识别。"
+                  if (found and not shutil.which("git")) else ""),
+        "installer_log_tail": (r.stdout or "")[-800:],
+    }
+
+
+@app.get("/api/logs")
+def read_logs(
+    lines: int = 200,
+    caller: Caller = Depends(get_caller),  # noqa: ARG001
+) -> dict:
+    return {"text": applog.get_tail(lines), **applog.stats()}
+
+
+@app.post("/api/logs/clear")
+def clear_logs(
+    caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
+) -> dict:
+    return {"ok": applog.clear_log(), **applog.stats()}
+
+
 @app.post("/api/usage/reset")
 def clear_usage(
     caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
@@ -347,13 +476,9 @@ def _local_only(caller: Caller) -> None:
 
 
 def _dev_only(caller: Caller) -> None:
-    """GitHub 发布是开发者工具：分发安装版(frozen)里禁用，远程也禁用。"""
+    """GitHub 上传仅本机可用（远程禁用,防远端拿走凭证乱推）。
+    打包分发版下也开放——它是个普适开发者工具,任何项目都能用。"""
     _local_only(caller)
-    if _FROZEN:
-        raise HTTPException(
-            status_code=403,
-            detail="安装分发版已禁用 GitHub 发布功能（开发者工具）",
-        )
 
 
 @app.get("/api/github")
@@ -363,7 +488,7 @@ def github_status(caller: Caller = Depends(get_caller)) -> dict:
     return {"has_token": bool(g.get("token")),
             "username": g.get("username", ""),
             "project_root": str(PROJECT_ROOT),
-            "dev": not _FROZEN}  # 打包分发版=False → 前端隐藏整组
+            "dev": True}  # 普适开发者工具,任何分发版都开放
 
 
 @app.post("/api/github")
@@ -558,7 +683,8 @@ async def agent_start(
     caller: Caller = Depends(require_permission("agent")),  # noqa: ARG001
 ) -> StreamingResponse:
     return StreamingResponse(
-        stream_start(body.task), media_type="text/event-stream"
+        stream_start(body.task, web=body.web),
+        media_type="text/event-stream",
     )
 
 
@@ -579,7 +705,7 @@ async def agent_continue(
     caller: Caller = Depends(require_permission("agent")),  # noqa: ARG001
 ) -> StreamingResponse:
     return StreamingResponse(
-        stream_continue(body.run_id, body.task),
+        stream_continue(body.run_id, body.task, web=body.web),
         media_type="text/event-stream",
     )
 
@@ -678,10 +804,64 @@ async def chat(
             "",
         )
 
-        # 2.5) 联网（方案A）：当前日期+搜索结果+强指令，直接拼进最后一条
-        #      用户消息（模型必看，根治"说无法联网/编数据/日期错"）
+        # 2.5) 联网:先让云端模型自决「该不该搜+搜什么」(tool-calling),
+        #      思考模式回退到文本决策,均失败再兜底总搜。
+        did_search = False
+        results: list = []
+        query = last_user
         if req.web and last_user:
-            results = await web_search(last_user)
+            decided = False
+            try:
+                resolved_d = get_active_resolved()
+                if resolved_d and resolved_d.get("api_key"):
+                    prov_d = build_provider(resolved_d)
+                    web_spec = {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": ("Search the web. Call ONLY if the "
+                                            "user's question needs fresh / "
+                                            "external info you don't already "
+                                            "have."),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"query": {"type": "string"}},
+                                "required": ["query"],
+                            },
+                        },
+                    }
+                    try:
+                        d = await prov_d.tool_complete(msgs, [web_spec])
+                        for tc in d.get("tool_calls", []):
+                            args = tc.get("arguments") or {}
+                            q = (args.get("query") if isinstance(args, dict)
+                                 else "") or last_user
+                            results.extend(await web_search(q))
+                            query = q
+                            did_search = True
+                        decided = True  # 空 tool_calls = 模型判不需要搜
+                    except Exception:  # noqa: BLE001
+                        # 思考模式不支持 tools → 文本决策兜底
+                        dec_msgs = [
+                            {"role": "system",
+                             "content": ("严格只输出一行:用户消息若需联网才能"
+                                         "准确答 → 输出 SEARCH: <精炼关键词>;"
+                                         "否则 → 输出 NO。不要其它字。")},
+                            {"role": "user", "content": last_user},
+                        ]
+                        d2 = await prov_d.tool_complete(dec_msgs, [])
+                        txt = (d2.get("content") or "").strip()
+                        if txt.upper().startswith("SEARCH:"):
+                            query = txt.split(":", 1)[1].strip() or last_user
+                            results = await web_search(query)
+                            did_search = True
+                        decided = True
+            except Exception:  # noqa: BLE001
+                decided = False
+            if not decided:
+                results = await web_search(last_user)
+                did_search = True
+        if did_search:
             wk = "一二三四五六日"[datetime.now().weekday()]
             today = datetime.now().strftime("%Y-%m-%d")
             block = [f"【系统提供的实时信息】今天是 {today}，星期{wk}"
