@@ -8,7 +8,6 @@ import {
   listConversations,
   saveConversation,
   setActive,
-  streamChat,
   streamSSE,
   type AgentEvent,
   type ChatMsg,
@@ -24,10 +23,9 @@ export default function ChatPage() {
   const [streaming, setStreaming] = useState(false);
   const [convList, setConvList] = useState<ConvSummary[]>([]);
   const [convId, setConvId] = useState<string | null>(null);
+  const [initLoading, setInitLoading] = useState(true);
   const [webOn, setWebOn] = useState(false);
-  const [fileOn, setFileOn] = useState(false);
-  const [setOn, setSetOn] = useState(false);
-  const setOnRef = useRef(false);
+  // 文件工具默认始终可用(不再设 toggle);设置工具(改设置)从对话中移除
   const [cfAwait, setCfAwait] = useState<AgentEvent | null>(null);
   const [editArgs, setEditArgs] = useState("");
 
@@ -37,7 +35,6 @@ export default function ChatPage() {
   const messagesRef = useRef<ChatMsg[]>([]);
   const jumpBottomRef = useRef(false);
   const webOnRef = useRef(false);
-  const fileOnRef = useRef(false);
   const baseDirRef = useRef("");
   const cfRunRef = useRef("");
   const cfAwaitRef = useRef(false);
@@ -49,14 +46,8 @@ export default function ChatPage() {
     webOnRef.current = webOn;
   }, [webOn]);
   useEffect(() => {
-    fileOnRef.current = fileOn;
-  }, [fileOn]);
-  useEffect(() => {
     cfAwaitRef.current = !!cfAwait;
   }, [cfAwait]);
-  useEffect(() => {
-    setOnRef.current = setOn;
-  }, [setOn]);
   useEffect(() => {
     getWorkspace()
       .then((w) => (baseDirRef.current = w.cwd || ""))
@@ -64,15 +55,18 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
-    getProviders()
-      .then(setPs)
-      .catch(() => void 0);
-    listConversations()
-      .then((list) => {
+    (async () => {
+      try {
+        getProviders().then(setPs).catch(() => void 0);
+        const list = await listConversations();
         setConvList(list);
-        if (list.length) loadConv(list[0].id);
-      })
-      .catch(() => void 0);
+        if (list.length) await loadConv(list[0].id);
+      } catch {
+        /* ignore */
+      } finally {
+        setInitLoading(false);
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -109,7 +103,7 @@ export default function ChatPage() {
     if (!id || !msgs.length) return;
     const title =
       msgs.find((m) => m.role === "user")?.content.slice(0, 40) || "新对话";
-    saveConversation(id, title, msgs, webOnRef.current, fileOnRef.current)
+    saveConversation(id, title, msgs, webOnRef.current, true)
       .then(refreshList)
       .catch(() => void 0);
   }
@@ -150,7 +144,7 @@ export default function ChatPage() {
       convIdRef.current = c.id;
       setConvId(c.id);
       setWebOn(!!c.web); // 该会话各自的联网开关
-      setFileOn(!!c.file); // 该会话各自的文件模式
+      // 文件模式现在总是开启,不再从会话恢复
       jumpBottomRef.current = true;
       setMessages(c.messages);
     } catch {
@@ -164,7 +158,7 @@ export default function ChatPage() {
     setConvId(null);
     setMessages([]);
     setWebOn(false); // 新会话默认关联网
-    setFileOn(false); // 新会话默认关文件模式
+    // 文件模式始终开启
     setCfAwait(null);
   }
 
@@ -184,13 +178,7 @@ export default function ChatPage() {
   function toggleWeb() {
     const next = !webOnRef.current;
     setWebOn(next);
-    _persistFlags(next, fileOnRef.current);
-  }
-
-  function toggleFile() {
-    const next = !fileOnRef.current;
-    setFileOn(next);
-    _persistFlags(webOnRef.current, next);
+    _persistFlags(next, true); // 文件总开,只持久化 web 变化
   }
 
   async function deleteCurrent() {
@@ -211,13 +199,7 @@ export default function ChatPage() {
     }
     const title =
       msgs.find((m) => m.role === "user")?.content.slice(0, 40) || "新对话";
-    await saveConversation(
-      id,
-      title,
-      msgs,
-      webOnRef.current,
-      fileOnRef.current
-    );
+    await saveConversation(id, title, msgs, webOnRef.current, true);
     refreshList();
   }
 
@@ -311,64 +293,9 @@ export default function ChatPage() {
     setMessages([...history, { role: "assistant", content: "", events: [] }]);
     setInput("");
     setStreaming(true);
-    if (setOnRef.current) {
-      cfStart(history, "settings");
-      return;
-    }
-    if (fileOnRef.current) {
-      cfStart(history, "file");
-      return;
-    }
-    acRef.current = streamChat(history, {
-      onRoute: (r) =>
-        setMessages((prev) => {
-          const c = [...prev];
-          const last = c[c.length - 1];
-          c[c.length - 1] = { ...last, route: r };
-          return c;
-        }),
-      onWeb: (n) =>
-        setMessages((prev) => {
-          const c = [...prev];
-          const last = c[c.length - 1];
-          c[c.length - 1] = { ...last, web: n };
-          return c;
-        }),
-      onReasoning: (d) =>
-        setMessages((prev) => {
-          const c = [...prev];
-          const last = c[c.length - 1];
-          c[c.length - 1] = {
-            ...last,
-            reasoning: (last.reasoning || "") + d,
-          };
-          return c;
-        }),
-      onDelta: (d) =>
-        setMessages((prev) => {
-          const c = [...prev];
-          const last = c[c.length - 1];
-          c[c.length - 1] = { ...last, content: last.content + d };
-          return c;
-        }),
-      onDone: () => {
-        setStreaming(false);
-        persist(messagesRef.current);
-      },
-      onError: (msg) => {
-        setMessages((prev) => {
-          const c = [...prev];
-          const last = c[c.length - 1];
-          c[c.length - 1] = {
-            ...last,
-            content: last.content + `\n\n> ⚠️ ${msg}`,
-          };
-          return c;
-        });
-        setStreaming(false);
-        persist(messagesRef.current);
-      },
-    }, webOn);
+    // 文件工具永远可用——所有对话走文件模式工具循环
+    // (cfStart 内部会按 webOn 决定是否走智能联网)
+    cfStart(history, "file");
   }
 
   function stop() {
@@ -404,23 +331,9 @@ export default function ChatPage() {
           <button
             className={"cfg-toggle" + (webOn ? " on" : "")}
             onClick={toggleWeb}
-            title="开启后先联网搜索再作答（状态随该会话保留）"
+            title="开启后云端模型自决何时联网搜索(状态随该会话保留)"
           >
             🌐 联网{webOn ? "·开" : "·关"}
-          </button>
-          <button
-            className={"cfg-toggle" + (fileOn ? " on" : "")}
-            onClick={toggleFile}
-            title="开启后可读写本机文件：读/查自动，增删改每次确认；远程禁用（状态随会话保留）"
-          >
-            📁 文件{fileOn ? "·开" : "·关"}
-          </button>
-          <button
-            className={"cfg-toggle" + (setOn ? " on" : "")}
-            onClick={() => setSetOn((v) => !v)}
-            title="开启后可用对话指令改设置（除全局提示词）：读类自动，加白名单根/改Token/发布等高危每次确认；仅本机"
-          >
-            ⚙️ 设置{setOn ? "·开" : "·关"}
           </button>
           {ps && ps.providers.length > 0 ? (
             <>
@@ -455,6 +368,12 @@ export default function ChatPage() {
       </div>
 
       <div className="msgs" ref={msgsRef}>
+        {initLoading && (
+          <div className="loading-row">
+            <span className="spinner" />
+            <span>加载对话中…</span>
+          </div>
+        )}
         {messages.length === 0 && (
           <div className="empty">
             发条消息试试。Markdown / 代码高亮 / 图片 / Mermaid 图表 /
@@ -568,11 +487,7 @@ export default function ChatPage() {
       <div className="composer">
         <textarea
           value={input}
-          placeholder={
-            fileOn
-              ? "📁 文件模式：描述要对文件做什么（增删改会先确认）"
-              : "输入消息，Enter 发送，Shift+Enter 换行"
-          }
+          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {

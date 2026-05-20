@@ -18,10 +18,29 @@ from config import (
     get_workspace,
     path_in_scope,
 )
+import re
+
 from skills_loader import build_injection
 from providers.openai_compat import OpenAICompatProvider
-from agent_tools import is_high_risk, run_tool, tool_specs
+from agent_tools import (
+    is_high_risk, run_tool, set_extra_paths, tool_specs,
+)
 import userdirs
+
+# Windows 绝对路径 C:\foo\bar 或 D:/baz; 从用户消息抽取
+_ABSPATH_RE = re.compile(
+    r"[A-Za-z]:[\\/](?:[^\s'\"<>|?*\n]+)"
+)
+
+
+def _extract_paths(text: str) -> list[str]:
+    if not text:
+        return []
+    out = []
+    for m in _ABSPATH_RE.finditer(text):
+        p = m.group(0).rstrip(".,;:!?)】」』\"'")
+        out.append(p)
+    return out
 from store import get_agent, save_agent
 
 RUNS: dict[str, dict[str, Any]] = {}
@@ -105,6 +124,9 @@ _SYS = (
     "文字然后就停下——要么立刻调用工具开始干活，要么任务真完成了再用"
     "简洁中文给出最终总结。**只用纯文本回复 = 你的本次响应结束**，"
     "不要把它当成『准备动手』的开场白。"
+    "【临时授权】用户在消息中**明确写出的绝对路径**(如 D:\\foo)即便不在"
+    "白名单也允许本轮访问;你可以直接对这些路径使用工具,无需先建议加"
+    "白名单。"
     "当前工作目录：{cwd}"
 )
 
@@ -139,6 +161,9 @@ def start_run(task: str, web: bool = True) -> tuple[str | None, str | None]:
     if skills:
         sys_content = skills + "\n\n" + sys_content
     rid = uuid.uuid4().hex[:12]
+    # 本轮临时授权用户消息中明确写出的绝对路径,使 _safe 放行
+    extras = _extract_paths(task)
+    set_extra_paths(extras)
     RUNS[rid] = {
         "messages": [
             {"role": "system", "content": sys_content},
@@ -153,6 +178,7 @@ def start_run(task: str, web: bool = True) -> tuple[str | None, str | None]:
         "cwd": cwd,
         "nudged_this_turn": False,  # 反铺垫骤停:每轮最多 nudge 一次
         "web_on": bool(web),       # 是否允许 Agent 调 web_search 工具
+        "extra_paths": extras,     # 本轮临时授权路径(消息中明确写出的)
     }
     _persist(rid)
     return rid, None
@@ -164,6 +190,8 @@ def _sse(obj: dict) -> bytes:
 
 async def _drive(rid: str) -> AsyncIterator[bytes]:
     run = RUNS[rid]
+    # 把本 run 的临时授权路径推到 agent_tools 模块全局,_safe 据此放行
+    set_extra_paths(run.get("extra_paths") or [])
     prov, perr = _provider()
     if prov is None:
         run["status"] = "error"
@@ -272,6 +300,11 @@ async def stream_start(task: str, web: bool = True) -> AsyncIterator[bytes]:
     yield _sse({"type": "run", "run_id": rid})
     # 用户首条指令（transcript 已在 start_run 写入，这里仅推送给前端）
     yield _sse({"type": "user", "content": task})
+    extras = RUNS.get(rid, {}).get("extra_paths") or []
+    if extras:
+        yield _rec(RUNS[rid], {"type": "info",
+                                "content": "本轮临时授权访问: "
+                                           + ", ".join(extras)})
     async for ev in _drive(rid):
         yield ev
 
@@ -316,6 +349,13 @@ async def stream_continue(rid: str, task: str,
     run["status"] = "running"
     run["nudged_this_turn"] = False
     run["web_on"] = bool(web)
+    extras = _extract_paths(task)
+    run["extra_paths"] = extras
+    set_extra_paths(extras)
+    if extras:
+        yield _rec(run, {"type": "info",
+                          "content": "本轮临时授权访问: "
+                                     + ", ".join(extras)})
     _persist(rid)
     async for ev in _drive(rid):
         yield ev

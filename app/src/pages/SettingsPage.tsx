@@ -74,6 +74,31 @@ export default function SettingsPage({
   const [ost, setOst] = useState<OllamaStatus | null>(null);
   const [oBase, setOBase] = useState("");
   const [oModel, setOModel] = useState("");
+  // 本地模型:多地址/多模型,持久到 localStorage
+  const [addrList, setAddrList] = useState<string[]>(() => {
+    try {
+      return JSON.parse(
+        localStorage.getItem("aih.local.addrs") || "[]"
+      ) as string[];
+    } catch {
+      return [];
+    }
+  });
+  const [modelsByAddr, setModelsByAddr] = useState<Record<string, string[]>>(
+    () => {
+      try {
+        return (JSON.parse(
+          localStorage.getItem("aih.local.models") || "{}"
+        ) || {}) as Record<string, string[]>;
+      } catch {
+        return {};
+      }
+    }
+  );
+  const [addrEditing, setAddrEditing] = useState(false);
+  const [newAddr, setNewAddr] = useState("");
+  const [modelEditing, setModelEditing] = useState(false);
+  const [newModel, setNewModel] = useState("");
   const [brain, setBrain] = useState<BrainCfg | null>(null);
   const [bMsg, setBMsg] = useState("");
 
@@ -95,6 +120,8 @@ export default function SettingsPage({
   const [ghMsg, setGhMsg] = useState("");
   const [logs, setLogs] = useState<LogsResp | null>(null);
   const [logsMsg, setLogsMsg] = useState("");
+  const [fullLogs, setFullLogs] = useState<string | null>(null);
+  const [loadingFull, setLoadingFull] = useState(false);
   const [gitSt, setGitSt] = useState<GitStatusResp | null>(null);
   // 用户可改:留两个常见预填
   const [gitUrl, setGitUrl] = useState(
@@ -257,7 +284,7 @@ export default function SettingsPage({
 
       <section className="set-block">
         <div className="set-title">
-          本地模型 (Ollama){" "}
+          本地模型{" "}
           <span
             className={
               "dot " +
@@ -268,38 +295,130 @@ export default function SettingsPage({
             ? "检测中…"
             : ost.reachable
             ? "在线"
-            : "离线（请确认 Ollama 已启动）"}
+            : "离线(请确认本地模型服务已启动)"}
         </div>
         <label>
-          Ollama 地址
-          <input
-            value={oBase}
-            disabled={!canSettings}
-            onChange={(e) => setOBase(e.target.value)}
-            placeholder="http://localhost:11434"
-          />
+          地址(可保存多个,下拉切换)
+          {addrEditing ? (
+            <div className="preset-row">
+              <input
+                value={newAddr}
+                onChange={(e) => setNewAddr(e.target.value)}
+                placeholder="http://localhost:1234 或 http://127.0.0.1:11434"
+              />
+              <button
+                onClick={() => {
+                  const v = newAddr.trim();
+                  if (!v) return;
+                  const next = Array.from(new Set([...addrList, v]));
+                  setAddrList(next);
+                  localStorage.setItem(
+                    "aih.local.addrs",
+                    JSON.stringify(next)
+                  );
+                  setOBase(v);
+                  setAddrEditing(false);
+                  setNewAddr("");
+                }}
+              >
+                确认
+              </button>
+              <button
+                onClick={() => {
+                  setAddrEditing(false);
+                  setNewAddr("");
+                }}
+              >
+                取消
+              </button>
+            </div>
+          ) : (
+            <select
+              value={oBase}
+              disabled={!canSettings}
+              onChange={(e) => {
+                if (e.target.value === "__add__") {
+                  setAddrEditing(true);
+                  setNewAddr("");
+                } else {
+                  setOBase(e.target.value);
+                }
+              }}
+            >
+              {Array.from(
+                new Set([...addrList, oBase].filter(Boolean))
+              ).map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+              <option value="__add__">＋ 添加新地址…</option>
+            </select>
+          )}
         </label>
         <label>
-          模型
-          {ost && ost.models.length ? (
+          模型(可保存多个,下拉切换)
+          {modelEditing ? (
+            <div className="preset-row">
+              <input
+                value={newModel}
+                onChange={(e) => setNewModel(e.target.value)}
+                placeholder="例如 qwen2.5:7b / llama3.1:8b"
+              />
+              <button
+                onClick={() => {
+                  const v = newModel.trim();
+                  if (!v) return;
+                  const cur = modelsByAddr[oBase] || [];
+                  const nextList = Array.from(new Set([...cur, v]));
+                  const next = { ...modelsByAddr, [oBase]: nextList };
+                  setModelsByAddr(next);
+                  localStorage.setItem(
+                    "aih.local.models",
+                    JSON.stringify(next)
+                  );
+                  setOModel(v);
+                  setModelEditing(false);
+                  setNewModel("");
+                }}
+              >
+                确认
+              </button>
+              <button
+                onClick={() => {
+                  setModelEditing(false);
+                  setNewModel("");
+                }}
+              >
+                取消
+              </button>
+            </div>
+          ) : (
             <select
               value={oModel}
               disabled={!canSettings}
-              onChange={(e) => setOModel(e.target.value)}
+              onChange={(e) => {
+                if (e.target.value === "__add__") {
+                  setModelEditing(true);
+                  setNewModel("");
+                } else {
+                  setOModel(e.target.value);
+                }
+              }}
             >
-              {ost.models.map((m) => (
+              {Array.from(
+                new Set([
+                  ...(modelsByAddr[oBase] || []),
+                  ...(ost?.models || []),
+                  oModel,
+                ].filter(Boolean))
+              ).map((m) => (
                 <option key={m} value={m}>
                   {m}
                 </option>
               ))}
+              <option value="__add__">＋ 添加新模型…</option>
             </select>
-          ) : (
-            <input
-              value={oModel}
-              disabled={!canSettings}
-              onChange={(e) => setOModel(e.target.value)}
-              placeholder="qwen2.5:3b"
-            />
           )}
         </label>
         {canSettings && (
@@ -717,8 +836,10 @@ export default function SettingsPage({
           onClick={() => setUpPriv((v) => !v)}
         />
         <div className="muted" style={{ marginTop: 4 }}>
-          只上传/更新【源码 + 说明文档】，不含安装包。安装包请自己跑
-          根目录的 <b>打包.bat</b>（产物在项目根 <b>release/</b>，自行分享）。
+          上传项目源码到 GitHub,不含安装包(安装包请自己跑根目录的
+          <b> 打包.bat</b>,产物在项目根 <b>release/</b>)。
+          下面「AI 生成说明文档」按钮**完全可选**——不点就不更新
+          说明文档,只传源码。
         </div>
         <div className="cfg-actions" style={{ marginTop: 8 }}>
           <button
@@ -781,10 +902,8 @@ export default function SettingsPage({
                 onClick={async () => {
                   if (
                     !confirm(
-                      `将把 ${ghPrev.will_count} 个文件(源码+说明文档)推送` +
-                        `到仓库 ${upRepo}（${
-                          upPriv ? "私有" : "公开"
-                        }）。继续？`
+                      `将把 ${ghPrev.will_count} 个文件推送到仓库 ` +
+                        `${upRepo}（${upPriv ? "私有" : "公开"}）。继续？`
                     )
                   )
                     return;
@@ -893,6 +1012,25 @@ export default function SettingsPage({
             >
               查看(最近 300 行)
             </button>
+            <button
+              className="cfg-toggle"
+              disabled={loadingFull}
+              onClick={async () => {
+                setLoadingFull(true);
+                setLogsMsg("载入全量日志中…");
+                try {
+                  const r = await getLogs(999999);
+                  setFullLogs(r.text || "(空)");
+                  setLogsMsg("");
+                } catch (e) {
+                  setLogsMsg((e as Error).message);
+                } finally {
+                  setLoadingFull(false);
+                }
+              }}
+            >
+              {loadingFull ? "载入中…" : "查看全部(弹窗)"}
+            </button>
             {canSettings && logs && (
               <button
                 className="cfg-toggle"
@@ -938,6 +1076,21 @@ export default function SettingsPage({
         )}
         <div className="cfg-msg">{logsMsg}</div>
       </section>
+
+      {fullLogs !== null && (
+        <div className="log-modal" onClick={() => setFullLogs(null)}>
+          <div
+            className="log-modal-body"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="log-modal-head">
+              <div className="set-title">全部日志</div>
+              <button onClick={() => setFullLogs(null)}>关闭</button>
+            </div>
+            <pre>{fullLogs}</pre>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -33,14 +33,50 @@ def _decode(b: bytes) -> str:
     return b.decode("latin-1", "replace")
 
 
+# 本轮临时授权访问的绝对路径(用户在消息中显式写出的)。由 agent_session
+# 每轮从用户消息里抽出后 set_extra_paths,本轮结束后保留到下一轮覆写。
+_EXTRA_PATHS: list[str] = []
+
+
+def set_extra_paths(paths: list[str]) -> None:
+    global _EXTRA_PATHS
+    cleaned = []
+    for p in paths or []:
+        try:
+            cleaned.append(str(Path(p).resolve()))
+        except (OSError, RuntimeError):
+            continue
+    _EXTRA_PATHS = cleaned
+
+
+def get_extra_paths() -> list[str]:
+    return list(_EXTRA_PATHS)
+
+
+def _path_under_extras(p: str) -> bool:
+    try:
+        pr = Path(p).resolve()
+    except (OSError, RuntimeError):
+        return False
+    for r in _EXTRA_PATHS:
+        try:
+            rp = Path(r)
+            if pr == rp or pr.is_relative_to(rp):
+                return True
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return False
+
+
 def _safe(path: str) -> Path:
     if not path:
         raise ToolError("路径为空")
-    if not path_in_scope(path):
-        raise ToolError(
-            f"拒绝：路径越出授权白名单 → {path}（去设置页把它的根目录加入授权）"
-        )
-    return Path(path).resolve()
+    if path_in_scope(path) or _path_under_extras(path):
+        return Path(path).resolve()
+    raise ToolError(
+        f"拒绝:路径越出授权白名单 → {path}(去设置页加根目录;或在你的"
+        "请求中明确写出该绝对路径,Agent 会本轮临时授权访问该路径)"
+    )
 
 
 def _cwd() -> str:

@@ -31,6 +31,7 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
   const [runId, setRunId] = useState("");
   const [editArgs, setEditArgs] = useState("");
   const [webOn, setWebOn] = useState(true);
+  const [initLoading, setInitLoading] = useState(true);
   const acRef = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const runIdRef = useRef("");
@@ -56,10 +57,12 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
         if (!runIdRef.current && list.length) {
           const mine = list.filter((s) => s.cwd === cwd);
           const pick = (mine.length ? mine : list)[0];
-          if (pick) loadSession(pick.id);
+          if (pick) await loadSession(pick.id);
         }
       } catch {
         /* ignore */
+      } finally {
+        setInitLoading(false);
       }
     })();
   }, []);
@@ -295,6 +298,12 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
       )}
 
       <div className="msgs">
+        {initLoading && (
+          <div className="loading-row">
+            <span className="spinner" />
+            <span>加载会话中…</span>
+          </div>
+        )}
         {events.map((e, i) => (
           <EventRow key={i} e={e} />
         ))}

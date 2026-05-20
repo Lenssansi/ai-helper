@@ -135,7 +135,32 @@ ipcMain.handle("dialog:pickFolder", async (e) => {
   return r.canceled ? "" : r.filePaths[0] || "";
 });
 
+// 读 settings.json 拿主题(开窗前),避免「先黑再切回亮」的闪烁
+function readSavedTheme() {
+  try {
+    const candidates = PACKED
+      ? [path.join(process.env.APPDATA || "", "ai-helper", "settings.json")]
+      : [path.join(ROOT, "data", "settings.json")];
+    for (const p of candidates) {
+      if (p && fs.existsSync(p)) {
+        const s = JSON.parse(fs.readFileSync(p, "utf-8"));
+        const t = s.theme;
+        if (t === "dark" || t === "light") return t;
+        if (t === "system")
+          return nativeTheme.shouldUseDarkColors ? "dark" : "light";
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return "light"; // 与 DEFAULTS["theme"] 保持一致
+}
+
 function createWindow() {
+  const savedTheme = readSavedTheme();
+  const bg = savedTheme === "dark" ? "#0f1115" : "#ffffff";
+  // 同步给 Windows 标题栏,防止边框颜色错位
+  nativeTheme.themeSource = savedTheme;
   const win = new BrowserWindow({
     width: 1180,
     height: 780,
@@ -143,7 +168,8 @@ function createWindow() {
     minHeight: 600,
     title: "ai-helper",
     icon: path.join(ROOT, "assets", "icon.ico"),
-    backgroundColor: "#0f1115",
+    backgroundColor: bg,
+    show: false, // 先建好再 show,避免空白白底闪一下
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -151,6 +177,8 @@ function createWindow() {
     },
   });
   win.removeMenu();
+  // 内容首帧就绪再 show:期间窗口是隐藏的,看不到默认背景闪烁
+  win.once("ready-to-show", () => win.show());
   if (PACKED) {
     win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   } else {
