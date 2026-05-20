@@ -33,14 +33,34 @@ _ABSPATH_RE = re.compile(
 )
 
 
+_TRIM = ".,;:!?)】」』\"'“”‘’《》）"
+
+
 def _extract_paths(text: str) -> list[str]:
     if not text:
         return []
     out = []
     for m in _ABSPATH_RE.finditer(text):
-        p = m.group(0).rstrip(".,;:!?)】」』\"'")
-        out.append(p)
+        p = m.group(0).rstrip(_TRIM)
+        if p:
+            out.append(p)
     return out
+
+
+def _augment_task_with_extras(task: str, extras: list[str]) -> str:
+    """把临时授权直接拼到 user 消息(模型看)的开头,强制其当轮遵守。
+    UI 不显示这段(transcript 用原文)。"""
+    if not extras:
+        return task
+    bullets = "\n".join(f"  - {p}" for p in extras)
+    return (
+        "[本轮临时授权——以下绝对路径已为本次回答放行,**绝不要**"
+        "回答『无权限/不在白名单/请加入白名单』,也**绝不要**假定"
+        "文件不存在;先用 read_file/list_dir/edit_file 等工具实际"
+        "尝试,工具真的报错了再据实回报]:\n"
+        f"{bullets}\n\n"
+        "用户原文:\n" + task
+    )
 from store import get_agent, save_agent
 
 RUNS: dict[str, dict[str, Any]] = {}
@@ -164,10 +184,12 @@ def start_run(task: str, web: bool = True) -> tuple[str | None, str | None]:
     # 本轮临时授权用户消息中明确写出的绝对路径,使 _safe 放行
     extras = _extract_paths(task)
     set_extra_paths(extras)
+    # 给模型看的是「附带授权提示的版本」,给 UI 的 transcript 仍是原文
+    augmented = _augment_task_with_extras(task, extras)
     RUNS[rid] = {
         "messages": [
             {"role": "system", "content": sys_content},
-            {"role": "user", "content": task},
+            {"role": "user", "content": augmented},
         ],
         "transcript": [{"type": "user", "content": task}],
         "batch": [],          # 当前待处理 tool_calls
@@ -342,14 +364,15 @@ async def stream_continue(rid: str, task: str,
         yield _sse({"type": "error",
                     "error": "有待确认的高危操作，请先批准/拒绝再继续"})
         return
-    run["messages"].append({"role": "user", "content": task})
+    extras = _extract_paths(task)
+    augmented = _augment_task_with_extras(task, extras)
+    run["messages"].append({"role": "user", "content": augmented})
     yield _rec(run, {"type": "user", "content": task})
     run["batch"] = []
     run["bi"] = 0
     run["status"] = "running"
     run["nudged_this_turn"] = False
     run["web_on"] = bool(web)
-    extras = _extract_paths(task)
     run["extra_paths"] = extras
     set_extra_paths(extras)
     if extras:
