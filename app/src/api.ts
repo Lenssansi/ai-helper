@@ -383,6 +383,18 @@ export const saveConversation = (
 export const deleteConversation = (id: string) =>
   sendJSON<{ ok: boolean }>(`/api/conversations/${id}`, "DELETE");
 
+// 原生文件夹选择器（仅 Electron 外壳；远程浏览器没有这个能力）。
+export const hasNativePicker = (): boolean => {
+  const w = window as unknown as { aihelper?: { pickFolder?: unknown } };
+  return typeof w.aihelper?.pickFolder === "function";
+};
+export const pickFolder = async (): Promise<string> => {
+  const w = window as unknown as {
+    aihelper?: { pickFolder?: () => Promise<string> };
+  };
+  return w.aihelper?.pickFolder ? await w.aihelper.pickFolder() : "";
+};
+
 // 流式对话
 export function streamChat(
   messages: ChatMsg[],

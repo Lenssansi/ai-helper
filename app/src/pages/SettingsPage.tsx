@@ -6,6 +6,8 @@ import {
   getGithub,
   getSkills,
   getWorkspace,
+  hasNativePicker,
+  pickFolder,
   githubGenDoc,
   githubPreview,
   githubSaveDoc,
@@ -357,8 +359,25 @@ export default function SettingsPage({
             <input
               value={newRoot}
               onChange={(e) => setNewRoot(e.target.value)}
-              placeholder="项目目录的完整路径（一个允许 Agent 操作的根目录）"
+              placeholder="手动输入路径，或点右侧「浏览…」选文件夹"
             />
+            {hasNativePicker() && (
+              <button
+                onClick={async () => {
+                  const p = await pickFolder();
+                  if (!p) return;
+                  // 选完直接加,不用再点「＋ 加」;同时回填输入框作可见反馈
+                  setNewRoot(p);
+                  await saveWs({
+                    allowed_roots: [...(wsc?.allowed_roots ?? []), p],
+                  });
+                  setNewRoot("");
+                }}
+                title="打开原生文件夹选择对话框（仅本机 Electron 可用）"
+              >
+                浏览…
+              </button>
+            )}
             <button
               onClick={() => {
                 if (!newRoot.trim()) return;

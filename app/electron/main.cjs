@@ -1,7 +1,13 @@
 // Electron 主进程：唯一可见窗口。启动时隐藏拉起 后端 + Vite + Ollama，
 // 就绪后开窗；退出时只杀「自己拉起的」。开发模式不变（源码即时改、
 // Vite 热更新），但不再有任何 cmd 黑窗。
-const { app, BrowserWindow, nativeTheme, ipcMain } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  dialog,
+  nativeTheme,
+  ipcMain,
+} = require("electron");
 const path = require("path");
 const http = require("http");
 const fs = require("fs");
@@ -118,6 +124,17 @@ ipcMain.on("set-native-theme", (_e, t) => {
     nativeTheme.themeSource = t;
 });
 
+// 原生文件夹选择对话框（设置页「授权根目录」加白名单用）。
+ipcMain.handle("dialog:pickFolder", async (e) => {
+  const win =
+    BrowserWindow.fromWebContents(e.sender) || BrowserWindow.getFocusedWindow();
+  const r = await dialog.showOpenDialog(win, {
+    title: "选择授权工作目录",
+    properties: ["openDirectory", "createDirectory"],
+  });
+  return r.canceled ? "" : r.filePaths[0] || "";
+});
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1180,
@@ -143,9 +160,13 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   await Promise.all([ensureOllama(), ensureBackend(), ensureVite()]);
-  // 打包：等后端就绪；开发：等 Vite 就绪。再开窗，避免白屏。
-  if (PACKED) await waitUntil(() => httpOk("http://127.0.0.1:8756/api/health"));
-  else await waitUntil(() => httpOk(DEV_URL));
+  // 开窗前必须同时等到后端 + (dev 模式下) Vite 就绪，否则窗口已开但
+  // 后端还没起，前端会立刻报「后端未连接」。两个 wait 并行不串行。
+  const waits = [
+    waitUntil(() => httpOk("http://127.0.0.1:8756/api/health")),
+  ];
+  if (!PACKED) waits.push(waitUntil(() => httpOk(DEV_URL)));
+  await Promise.all(waits);
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

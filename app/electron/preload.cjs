@@ -5,4 +5,6 @@ contextBridge.exposeInMainWorld("aihelper", {
   isElectron: true,
   platform: process.platform,
   setNativeTheme: (t) => ipcRenderer.send("set-native-theme", t),
+  // 原生文件夹选择对话框；远程浏览器访问拿不到此 API，前端要做能力检测
+  pickFolder: () => ipcRenderer.invoke("dialog:pickFolder"),
 });
