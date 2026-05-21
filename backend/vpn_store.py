@@ -72,31 +72,115 @@ def list_subs() -> list[dict[str, Any]]:
     return [_public(s) for s in items]
 
 
-def _parse_yaml_nodes(yaml_text: str) -> list[str]:
-    """从 Clash 订阅 YAML 抽节点名。优先用 PyYAML(可靠),失败退正则。"""
-    if not yaml_text or not yaml_text.strip():
-        return []
-    # 1) PyYAML 路线
+def _try_parse_clash_yaml(text: str) -> list[str]:
+    """尝试用 PyYAML 解析 Clash YAML 提节点名。"""
     try:
         import yaml as _yaml
-        # 部分订阅含 !<str>/!!str 这类 tag,用 SafeLoader 兜底
-        data = _yaml.safe_load(yaml_text)
-        if isinstance(data, dict):
-            proxies = data.get("proxies") or []
-            names: list[str] = []
-            seen: set[str] = set()
-            for p in proxies:
-                if isinstance(p, dict):
-                    n = p.get("name")
-                    if isinstance(n, str) and n.strip() and n not in seen:
-                        names.append(n.strip())
-                        seen.add(n)
-            if names:
-                return names
+        data = _yaml.safe_load(text)
+        if not isinstance(data, dict):
+            return []
+        proxies = data.get("proxies") or data.get("Proxy") or []
+        names: list[str] = []
+        seen: set[str] = set()
+        for p in proxies:
+            if isinstance(p, dict):
+                n = p.get("name")
+                if isinstance(n, str) and n.strip() and n not in seen:
+                    names.append(n.strip())
+                    seen.add(n)
+        return names
     except Exception:  # noqa: BLE001
-        # YAML 解析炸了 → 退正则
-        pass
-    # 2) 正则兜底(老逻辑)
+        return []
+
+
+def _try_parse_v2ray_uris(text: str) -> list[str]:
+    """V2Ray 订阅格式:base64 解码后,一行一个 vmess://xxx / vless://... /
+    ss://... / trojan://... / ssr://... 的 URI。抽 "#" 后的节点名(或
+    vmess 的 ps 字段)。
+    """
+    import base64
+    import json as _json
+    from urllib.parse import unquote
+
+    # 1) 尝试 base64 解
+    raw = text.strip()
+    decoded = ""
+    try:
+        # 容错:补 padding,去换行
+        compact = re.sub(r"\s+", "", raw)
+        if compact and all(
+            c.isalnum() or c in "+/=-_" for c in compact[:200]
+        ):
+            pad = "=" * (-len(compact) % 4)
+            try:
+                decoded = base64.urlsafe_b64decode(compact + pad).decode(
+                    "utf-8", errors="ignore"
+                )
+            except Exception:  # noqa: BLE001
+                decoded = base64.b64decode(compact + pad).decode(
+                    "utf-8", errors="ignore"
+                )
+    except Exception:  # noqa: BLE001
+        decoded = ""
+    # 2) 没 base64 成功 → 看原文本里是否已经是 URI 列表
+    candidate = decoded if "://" in decoded else raw
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for line in candidate.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        m = re.match(
+            r"^(vmess|vless|ss|ssr|trojan|hysteria2?|tuic|snell)://(.+)$",
+            s,
+            re.I,
+        )
+        if not m:
+            continue
+        scheme = m.group(1).lower()
+        body = m.group(2)
+        name: str | None = None
+        if scheme == "vmess":
+            # vmess://base64(json)
+            try:
+                pad = "=" * (-len(body) % 4)
+                jraw = base64.urlsafe_b64decode(body + pad).decode(
+                    "utf-8", errors="ignore"
+                )
+                obj = _json.loads(jraw)
+                cand = obj.get("ps") or obj.get("remarks") or obj.get("name")
+                if isinstance(cand, str) and cand.strip():
+                    name = cand.strip()
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            # 其它协议:URI 后面 # 是 fragment = 节点名(URL 编码的)
+            if "#" in s:
+                name = unquote(s.rsplit("#", 1)[1]).strip()
+        if not name:
+            # 兜底:取 URL 前 24 字节做标识
+            name = scheme + "://" + body[:24]
+        if name not in seen:
+            names.append(name)
+            seen.add(name)
+    return names
+
+
+def _parse_yaml_nodes(yaml_text: str) -> list[str]:
+    """提取节点名。按顺序尝试:① Clash YAML ② V2Ray base64 / URI 列表
+    ③ 老正则兜底。"""
+    if not yaml_text or not yaml_text.strip():
+        return []
+    # 1) Clash YAML(标准格式)
+    ns = _try_parse_clash_yaml(yaml_text)
+    if ns:
+        return ns
+    # 2) V2Ray/SS/Trojan URI 列表(base64 或裸文本)
+    ns = _try_parse_v2ray_uris(yaml_text)
+    if ns:
+        return ns
+    # 3) 正则兜底(YAML 里有 name: 但 PyYAML 解析失败的奇葩格式)
     names: list[str] = []
     in_proxies = False
     for line in yaml_text.splitlines():
@@ -114,6 +198,26 @@ def _parse_yaml_nodes(yaml_text: str) -> list[str]:
         if m:
             names.append(m.group(1).strip())
     return names
+
+
+def detect_format(yaml_text: str) -> str:
+    """诊断订阅内容格式,用于前端预览/排错。"""
+    if not yaml_text:
+        return "empty"
+    head = yaml_text.lstrip()[:200]
+    if re.match(r"^(proxies|Proxy)\s*:", head, re.M):
+        return "clash-yaml"
+    if "://" in head and re.search(
+        r"^(vmess|vless|ss|ssr|trojan|hysteria2?|tuic)://", head, re.M | re.I
+    ):
+        return "v2ray-uri"
+    # 看着像 base64:只含 base64 字符 + 长度合理
+    compact = re.sub(r"\s+", "", yaml_text)
+    if compact and len(compact) > 32 and all(
+        c.isalnum() or c in "+/=-_" for c in compact[:400]
+    ):
+        return "base64"
+    return "unknown"
 
 
 _SUB_INFO_RE = re.compile(

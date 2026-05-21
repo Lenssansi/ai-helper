@@ -1,11 +1,13 @@
 // VPN 订阅 / 节点管理页 —— 框架,具体接口/列表后续填充
 import { useEffect, useState } from "react";
 import {
+  type VpnPreview,
   type VpnRule,
   type VpnSub,
   listVpnSubs,
   addVpnSub,
   deleteVpnSub,
+  previewVpnSub,
   refreshVpnSub,
   setVpnRules,
 } from "../api";
@@ -20,6 +22,8 @@ export default function VpnPage() {
   const [msg, setMsg] = useState("");
   // 哪张卡的刷新在跑(用来显示行内 spinner / 禁用按钮)
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<VpnPreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
 
   async function reload() {
     try {
@@ -169,6 +173,22 @@ export default function VpnPage() {
                 />
               </div>
               <div className="prov-actions">
+                <button
+                  disabled={previewing}
+                  onClick={async () => {
+                    setPreviewing(true);
+                    setMsg("");
+                    try {
+                      setPreview(await previewVpnSub(s.id));
+                    } catch (e) {
+                      setMsg("预览失败:" + (e as Error).message);
+                    } finally {
+                      setPreviewing(false);
+                    }
+                  }}
+                >
+                  预览节点
+                </button>
                 {s.url && (
                   <button
                     disabled={refreshingId === s.id}
@@ -212,6 +232,69 @@ export default function VpnPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {preview && (
+        <div className="log-modal" onClick={() => setPreview(null)}>
+          <div
+            className="log-modal-body"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="log-modal-head">
+              <div className="set-title">
+                节点预览 · {preview.name}
+                <span className="badge" style={{ marginLeft: 8 }}>
+                  {preview.format}
+                </span>
+                <span className="badge" style={{ marginLeft: 4 }}>
+                  {preview.nodes.length} 节点
+                </span>
+              </div>
+              <button onClick={() => setPreview(null)}>关闭</button>
+            </div>
+            {preview.nodes.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, overflow: "auto" }}>
+                {preview.nodes.map((n, i) => (
+                  <div key={i} style={{
+                    padding: "6px 10px",
+                    background: "var(--panel-2)",
+                    border: "1px solid var(--border-2)",
+                    borderRadius: 6,
+                    fontSize: 13,
+                    fontFamily: "monospace",
+                  }}>
+                    {i + 1}. {n}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="cfg-note warn" style={{ marginBottom: 8 }}>
+                {preview.format === "v2ray-uri" || preview.format === "base64"
+                  ? "订阅返回的是 V2Ray/SS/Trojan URI 列表(非 Clash YAML)。已尽力提取节点名,但 mihomo 实际跑不了这种格式 — 多数机场支持在订阅 URL 末尾加 `&flag=clash`(或 `?flag=clash`)就会返 YAML,改完点「刷新」即可。"
+                  : preview.format === "unknown"
+                  ? "无法识别订阅格式。看下面原始内容头部排查 — 常见原因:URL 错、token 过期、机场返了 HTML 错误页。"
+                  : "已用 Clash YAML 解析,但 proxies 字段为空。看下面原始内容确认订阅是不是空了。"}
+              </div>
+            )}
+            <div className="muted" style={{ marginTop: 10 }}>
+              原始内容头部(共 {preview.raw_len} 字节,只显示前 2000):
+            </div>
+            <pre style={{
+              maxHeight: 240,
+              overflow: "auto",
+              background: "var(--panel-2)",
+              border: "1px solid var(--border-2)",
+              borderRadius: 7,
+              padding: 10,
+              fontSize: 11,
+              marginTop: 4,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+            }}>
+              {preview.raw_head || "(空)"}
+            </pre>
+          </div>
         </div>
       )}
     </div>

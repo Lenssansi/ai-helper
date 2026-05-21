@@ -481,6 +481,29 @@ def vpn_refresh(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/vpn/subs/{sid}/preview")
+def vpn_preview(
+    sid: str,
+    caller: Caller = Depends(get_caller),  # noqa: ARG001
+) -> dict:
+    """订阅内容预览:实时再解析一次给出节点列表 + 格式诊断 + 头部样本。"""
+    import vpn_store
+    s = vpn_store.get_sub_internal(sid)
+    if not s:
+        raise HTTPException(status_code=404, detail="订阅不存在")
+    yaml_text = s.get("yaml_content", "") or ""
+    nodes = vpn_store._parse_yaml_nodes(yaml_text)
+    fmt = vpn_store.detect_format(yaml_text)
+    return {
+        "id": sid,
+        "name": s.get("name", ""),
+        "format": fmt,
+        "nodes": nodes,
+        "raw_head": yaml_text[:2000],
+        "raw_len": len(yaml_text),
+    }
+
+
 @app.post("/api/vpn/subs/{sid}/rules")
 def vpn_set_rules(
     sid: str,

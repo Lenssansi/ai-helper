@@ -223,6 +223,17 @@ export const refreshVpnSub = (id: string) =>
 export const setVpnRules = (id: string, rules: VpnRule[]) =>
   sendJSON<VpnSub>(`/api/vpn/subs/${id}/rules`, "POST", { rules });
 
+export interface VpnPreview {
+  id: string;
+  name: string;
+  format: "clash-yaml" | "v2ray-uri" | "base64" | "unknown" | "empty";
+  nodes: string[];
+  raw_head: string;
+  raw_len: number;
+}
+export const previewVpnSub = (id: string) =>
+  getJSON<VpnPreview>(`/api/vpn/subs/${id}/preview`);
+
 export interface NodeTestResult {
   ok: boolean;
   ms?: number;
