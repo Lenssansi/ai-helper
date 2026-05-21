@@ -190,6 +190,8 @@ class ProviderTestReq(BaseModel):
 
 class ProviderDiscoverReq(BaseModel):
     base_url: str
+    api_key: str | None = None  # Gemini/OpenAI 这类需要 Bearer 才返模型列表
+    provider_id: str | None = None  # 给则走该 provider 的 VPN(若开启)
 
 
 class ThemePatch(BaseModel):
@@ -319,9 +321,24 @@ def discover_provider_models(
     req: ProviderDiscoverReq,
     caller: Caller = Depends(get_caller),  # noqa: ARG001
 ) -> dict:
-    """给前端「自动发现模型」按钮:探测 base_url 的可用模型列表。"""
-    from config import discover_models
-    return {"models": discover_models(req.base_url)}
+    """给前端「自动发现模型」按钮:探测 base_url 的可用模型列表。
+    若给了 provider_id 且该 provider 已开 VPN,通过其 VPN 子代理探测。"""
+    from config import _find, discover_models, load_settings
+
+    proxy: str | None = None
+    if req.provider_id:
+        s = load_settings()
+        prov = _find(s["providers"], req.provider_id)
+        if prov and prov.get("use_vpn") and prov.get("vpn_sub_id") and (
+            prov.get("vpn_node") or (prov.get("vpn_nodes") or [])
+        ):
+            import vpn
+            node = (prov.get("vpn_node")
+                     or (prov.get("vpn_nodes") or [None])[0])
+            url, _err = vpn.ensure_proxy(prov["vpn_sub_id"], node)
+            if url:
+                proxy = url
+    return {"models": discover_models(req.base_url, req.api_key, proxy)}
 
 
 @app.post("/api/providers/test")
@@ -519,12 +536,11 @@ async def test_provider_node(
 
     import httpx
 
-    proxies = {"http://": url, "https://": url}
     t0 = time.perf_counter()
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, connect=6.0),
-            proxies=proxies,
+            proxy=url,  # httpx 0.28+ 用单数 proxy
             follow_redirects=False,
         ) as c:
             r = await c.head(target)

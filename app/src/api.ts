@@ -156,9 +156,14 @@ export const testProvider = (provider_id: string, preset_label: string) =>
     preset_label,
   });
 
-export const discoverProviderModels = (base_url: string) =>
+export const discoverProviderModels = (
+  base_url: string,
+  opts?: { api_key?: string; provider_id?: string },
+) =>
   sendJSON<{ models: string[] }>("/api/providers/discover", "POST", {
     base_url,
+    api_key: opts?.api_key || null,
+    provider_id: opts?.provider_id || null,
   });
 
 export interface LogsResp {

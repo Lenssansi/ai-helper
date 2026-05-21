@@ -351,23 +351,44 @@ def mask_provider(p: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def discover_models(base_url: str) -> list[str]:
-    """给前端「自动发现」按钮:先试 Ollama /api/tags,再试 OpenAI /v1/models。"""
+def discover_models(base_url: str,
+                     api_key: str | None = None,
+                     proxy: str | None = None) -> list[str]:
+    """给前端「自动发现」按钮:先试 Ollama /api/tags,再试多种 OpenAI 兼容路径。
+    api_key 给则带 Bearer(Gemini/OpenAI/Anthropic 都需要);proxy 给则走 VPN。"""
     base = (base_url or "").rstrip("/")
     if not base:
         return []
-    ms = _ollama_models(base)
-    if ms:
-        return ms
-    # 兜底:OpenAI-兼容 /v1/models
-    try:
-        url = base if base.endswith("/v1") else base + "/v1"
-        r = httpx.get(f"{url}/models", timeout=3.0)
-        if r.status_code == 200:
-            data = r.json().get("data") or []
-            return [m.get("id", "") for m in data if m.get("id")]
-    except (httpx.HTTPError, ValueError, KeyError):
-        pass
+    # 不带 key 时 Ollama 优先(本机一般免认证)
+    if not api_key:
+        ms = _ollama_models(base)
+        if ms:
+            return ms
+    # 尝试多种 OpenAI 兼容路径:Gemini 是 .../openai/models 不是 .../v1/models
+    candidates = []
+    if base.endswith("/v1") or base.endswith("/openai"):
+        candidates.append(base + "/models")  # 已含版本/接入点段
+    else:
+        candidates.append(base + "/v1/models")
+        candidates.append(base + "/models")  # 兜底直接挂
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    for url in candidates:
+        try:
+            with httpx.Client(timeout=5.0, headers=headers, proxy=proxy,
+                              follow_redirects=True) as c:
+                r = c.get(url)
+            if r.status_code == 200:
+                data = r.json().get("data") or []
+                ids = [m.get("id", "") for m in data if m.get("id")]
+                # 去掉路径前缀(Gemini 给 "models/gemini-2.5-pro")
+                ids = [i.split("/", 1)[-1] if i.startswith("models/")
+                        else i for i in ids]
+                if ids:
+                    return ids
+        except (httpx.HTTPError, ValueError, KeyError):
+            continue
     return []
 
 

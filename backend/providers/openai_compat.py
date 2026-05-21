@@ -31,16 +31,17 @@ class OpenAICompatProvider:
         self.vpn_sub_id = cfg.get("vpn_sub_id", "")
         self.vpn_node = cfg.get("vpn_node", "")
 
-    def _proxies(self) -> dict[str, str] | None:
-        """若 use_vpn=true 则按需启动 mihomo 子代理,返回 httpx proxies 配置。
-        启动失败 → 抛 ProviderError(让上层报错而非偷偷绕过)。"""
+    def _proxy(self) -> str | None:
+        """若 use_vpn=true 则按需启动 mihomo 子代理,返回 httpx 0.28+ 的
+        `proxy` 单串参数(httpx 0.28 已删除 `proxies` 字典参数)。
+        VPN 关 → None;启动失败 → 抛 ProviderError 让上层据实报错。"""
         if not self.use_vpn:
             return None
         import vpn
         url, err = vpn.ensure_proxy(self.vpn_sub_id, self.vpn_node)
         if not url:
             raise ProviderError(f"VPN 启动失败: {err}")
-        return {"http://": url, "https://": url}
+        return url
 
     def _record(self, usage: dict | None) -> None:
         """记一次用量；本地 Ollama / 无 usage 字段则忽略，绝不影响主流程。"""
@@ -75,10 +76,9 @@ class OpenAICompatProvider:
         }
 
         timeout = httpx.Timeout(60.0, connect=10.0)
-        proxies = self._proxies()
         try:
             async with httpx.AsyncClient(
-                timeout=timeout, proxies=proxies,
+                timeout=timeout, proxy=self._proxy(),
             ) as client:
                 async with client.stream(
                     "POST", url, headers=headers, json=payload
@@ -135,7 +135,7 @@ class OpenAICompatProvider:
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(120.0, connect=10.0),
-                proxies=self._proxies(),
+                proxy=self._proxy(),
             ) as c:
                 r = await c.post(
                     url,

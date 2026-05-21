@@ -572,7 +572,10 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                 }
                 setErr("发现中…");
                 try {
-                  const r = await discoverProviderModels(base);
+                  const r = await discoverProviderModels(base, {
+                    api_key: draft.api_key.trim() || undefined,
+                    provider_id: draft.id, // 已存的 provider → 借其 VPN 探
+                  });
                   if (!r.models.length) {
                     setErr(
                       "未发现模型(地址不可达?或不是 Ollama / OpenAI 兼容接口)"
