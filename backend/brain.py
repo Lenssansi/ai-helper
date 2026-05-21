@@ -105,11 +105,30 @@ async def route(user_text: str, brain: dict[str, Any]) -> dict[str, Any] | None:
     if not provs and allow_local:
         return {"mode": "local", "reason": "无可用云端 API，本地直答"}
 
+    # 过滤掉聚合器且无置顶预设的 provider(它们没可路由的目标)
+    provs = [
+        p for p in provs
+        if not p.get("aggregator") or p.get("presets")
+    ]
+    if not provs and not allow_local:
+        return None
+    if not provs and allow_local:
+        return {"mode": "local", "reason": "无可用云端预设(聚合器请置顶后再用)"}
     lines = []
     for p in provs:
+        # presets 现在可能是 [str] (旧) 或 [{"label","description"}] (新)
+        preset_view: list[str] = []
+        for x in p["presets"]:
+            if isinstance(x, dict):
+                lbl = x.get("label", "")
+                desc = x.get("description") or ""
+                preset_view.append(f"{lbl}({desc})" if desc else lbl)
+            else:
+                preset_view.append(str(x))
+        tag = "[聚合器]" if p.get("aggregator") else ""
         lines.append(
-            f'- id={p["id"]} 名称={p["name"]} 擅长={p["capability"] or "未填"}'
-            f' 预设={p["presets"]}'
+            f'- id={p["id"]} 名称={p["name"]}{tag} 擅长={p["capability"] or "未填"}'
+            f' 预设={preset_view}'
         )
     local_rule = (
         "规则：打招呼、闲聊、寒暄、常识小问答、简单翻译等轻量任务，"

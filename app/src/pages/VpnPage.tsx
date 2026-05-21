@@ -1,5 +1,5 @@
-// VPN 订阅 / 节点管理页 —— 框架,具体接口/列表后续填充
-import { useEffect, useState } from "react";
+// VPN 订阅 / 节点管理页 —— 添加/编辑 + 文件导入 + 转换提示
+import { useEffect, useRef, useState } from "react";
 import {
   type VpnPreview,
   type VpnRule,
@@ -10,20 +10,33 @@ import {
   previewVpnSub,
   refreshVpnSub,
   setVpnRules,
+  testVpnSubAll,
+  updateVpnSub,
 } from "../api";
+
+type FormMode = null | "add" | "edit";
 
 export default function VpnPage() {
   const [list, setList] = useState<VpnSub[] | null>(null);
-  const [adding, setAdding] = useState(false);
+  const [formMode, setFormMode] = useState<FormMode>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [yaml, setYaml] = useState("");
+  const [yamlFileName, setYamlFileName] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   // 哪张卡的刷新在跑(用来显示行内 spinner / 禁用按钮)
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [preview, setPreview] = useState<VpnPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  // 订阅级 TCP 测延迟结果:subId → (nodeName → ms|null)
+  const [latency, setLatency] = useState<
+    Record<string, Record<string, number | null>>
+  >({});
+  // 哪个订阅正在测延迟(行内 spinner)
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   async function reload() {
     try {
@@ -36,23 +49,78 @@ export default function VpnPage() {
     reload();
   }, []);
 
-  async function doAdd() {
+  function resetForm() {
+    setName("");
+    setUrl("");
+    setYaml("");
+    setYamlFileName("");
+    setEditingId(null);
+    setBusy(false);
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
+  function openAdd() {
+    resetForm();
+    setMsg("");
+    setFormMode("add");
+  }
+
+  function openEdit(s: VpnSub) {
+    resetForm();
+    setMsg("");
+    setEditingId(s.id);
+    setName(s.name);
+    setUrl(s.url || "");
+    setFormMode("edit");
+  }
+
+  function closeForm() {
+    resetForm();
+    setFormMode(null);
+  }
+
+  async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) {
+      setYaml("");
+      setYamlFileName("");
+      return;
+    }
+    try {
+      const text = await f.text();
+      setYaml(text);
+      setYamlFileName(f.name);
+    } catch (err) {
+      setMsg("读取文件失败:" + (err as Error).message);
+    }
+  }
+
+  async function doSubmit() {
     setBusy(true);
     setMsg("");
     try {
-      await addVpnSub({
-        name: name.trim() || "未命名订阅",
-        url: url.trim() || null,
-        yaml: yaml.trim() || null,
-      });
-      setName("");
-      setUrl("");
-      setYaml("");
-      setAdding(false);
-      await reload();
-      setMsg("已添加");
+      if (formMode === "add") {
+        await addVpnSub({
+          name: name.trim() || "未命名订阅",
+          url: url.trim() || null,
+          yaml: yaml.trim() || null,
+        });
+        await reload();
+        setMsg("已添加");
+        closeForm();
+      } else if (formMode === "edit" && editingId) {
+        await updateVpnSub(editingId, {
+          name: name.trim() || null,
+          // 空字符串 = 不动 URL;有值 = 切到 URL 源并重新拉取
+          url: url.trim() ? url.trim() : null,
+          yaml: yaml.trim() || null,
+        });
+        await reload();
+        setMsg("已保存");
+        closeForm();
+      }
     } catch (e) {
-      setMsg("添加失败:" + (e as Error).message);
+      setMsg("保存失败:" + (e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -62,8 +130,8 @@ export default function VpnPage() {
     <div className="page">
       <div className="chat-head">
         <h1>VPN 订阅</h1>
-        {!adding && (
-          <button className="cfg-toggle" onClick={() => setAdding(true)}>
+        {!formMode && (
+          <button className="cfg-toggle" onClick={openAdd}>
             ＋ 添加订阅
           </button>
         )}
@@ -78,8 +146,11 @@ export default function VpnPage() {
         </div>
       )}
 
-      {adding && (
+      {formMode && (
         <div className="cfg-box">
+          <div className="set-title" style={{ marginBottom: 6 }}>
+            {formMode === "add" ? "添加新订阅" : "编辑订阅"}
+          </div>
           <label>
             订阅名称
             <input
@@ -89,7 +160,7 @@ export default function VpnPage() {
             />
           </label>
           <label>
-            订阅 URL(任选其一)
+            订阅 URL{formMode === "edit" ? "(留空保持不变;改了会重新拉取)" : "(任选其一)"}
             <input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -97,21 +168,48 @@ export default function VpnPage() {
             />
           </label>
           <label>
-            或粘贴 Clash YAML 内容
-            <textarea
-              className="sys-area"
-              value={yaml}
-              onChange={(e) => setYaml(e.target.value)}
-              placeholder="port: 7890\nproxies:\n  - name: ..."
-              style={{ minHeight: 120 }}
-            />
+            或导入 Clash YAML 文件
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".yaml,.yml,.txt,text/yaml,application/yaml"
+                onChange={onPickFile}
+                style={{ flex: 1 }}
+              />
+              {yamlFileName && (
+                <span className="muted" style={{ fontSize: 12 }}>
+                  已选:{yamlFileName}({yaml.length} 字节)
+                </span>
+              )}
+              {yaml && (
+                <button
+                  onClick={() => {
+                    setYaml("");
+                    setYamlFileName("");
+                    if (fileRef.current) fileRef.current.value = "";
+                  }}
+                  style={{ padding: "4px 10px" }}
+                >
+                  清空
+                </button>
+              )}
+            </div>
           </label>
+          <div className="cfg-note" style={{ fontSize: 12, marginTop: 4 }}>
+            支持 Clash YAML / V2Ray 订阅(base64 URI 列表会自动转 Clash YAML)。
+          </div>
           <div className="cfg-actions">
-            <button disabled={busy} onClick={doAdd}>
-              {busy ? "添加中…" : "确认添加"}
+            <button disabled={busy} onClick={doSubmit}>
+              {busy
+                ? "保存中…"
+                : formMode === "add"
+                ? "确认添加"
+                : "保存修改"}
             </button>
-            <button onClick={() => setAdding(false)}>取消</button>
-            <span className="cfg-msg">{msg}</span>
+            <button disabled={busy} onClick={closeForm}>
+              取消
+            </button>
           </div>
         </div>
       )}
@@ -137,6 +235,15 @@ export default function VpnPage() {
                   ) : (
                     <span className="badge">YAML</span>
                   )}
+                  {s.converted_from_uri && (
+                    <span
+                      className="badge"
+                      style={{ background: "#e7f5ff", color: "#1971c2" }}
+                      title="原订阅是 V2Ray URI/base64,已自动转为 Clash YAML 以供 mihomo 使用"
+                    >
+                      已转换
+                    </span>
+                  )}
                 </div>
                 {s.updated && (
                   <div className="muted">
@@ -155,11 +262,10 @@ export default function VpnPage() {
                   </div>
                 )}
                 {s.nodes && s.nodes.length > 0 && (
-                  <div className="muted">
-                    节点:{s.nodes.length} 个(
-                    {s.nodes.slice(0, 3).join(" · ")}
-                    {s.nodes.length > 3 ? " · …" : ""})
-                  </div>
+                  <NodeListWithLatency
+                    nodes={s.nodes}
+                    latency={latency[s.id] || {}}
+                  />
                 )}
                 <RulesEditor
                   sub={s}
@@ -189,6 +295,50 @@ export default function VpnPage() {
                 >
                   预览节点
                 </button>
+                <button onClick={() => openEdit(s)}>编辑</button>
+                {s.nodes && s.nodes.length > 0 && (
+                  <button
+                    disabled={testingId === s.id}
+                    title="并发 TCP 直连测全部节点(不依赖 mihomo)"
+                    onClick={async () => {
+                      setTestingId(s.id);
+                      setMsg(`测「${s.name}」${s.nodes!.length} 个节点延迟中…`);
+                      try {
+                        const r = await testVpnSubAll(s.id);
+                        const map: Record<string, number | null> = {};
+                        for (const item of r.results) {
+                          if (item.node)
+                            map[item.node] = item.ok ? item.ms ?? null : null;
+                        }
+                        setLatency((prev) => ({ ...prev, [s.id]: map }));
+                        setMsg(
+                          `✓ 「${s.name}」${r.alive}/${r.count} 节点可连`,
+                        );
+                      } catch (e) {
+                        setMsg("测延迟失败:" + (e as Error).message);
+                      } finally {
+                        setTestingId(null);
+                      }
+                    }}
+                  >
+                    {testingId === s.id ? (
+                      <>
+                        <span
+                          className="spinner"
+                          style={{
+                            width: 12,
+                            height: 12,
+                            borderWidth: 2,
+                            marginRight: 4,
+                          }}
+                        />
+                        测延迟中…
+                      </>
+                    ) : (
+                      "测全部延迟"
+                    )}
+                  </button>
+                )}
                 {s.url && (
                   <button
                     disabled={refreshingId === s.id}
@@ -211,7 +361,15 @@ export default function VpnPage() {
                   >
                     {refreshingId === s.id ? (
                       <>
-                        <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2, marginRight: 4 }} />
+                        <span
+                          className="spinner"
+                          style={{
+                            width: 12,
+                            height: 12,
+                            borderWidth: 2,
+                            marginRight: 4,
+                          }}
+                        />
                         刷新中…
                       </>
                     ) : (
@@ -223,8 +381,18 @@ export default function VpnPage() {
                   className="danger"
                   onClick={async () => {
                     if (!confirm(`删除订阅「${s.name}」?`)) return;
-                    await deleteVpnSub(s.id);
-                    reload();
+                    try {
+                      await deleteVpnSub(s.id);
+                      // 删除时若正在编辑这条 → 关闭表单防卡死
+                      if (editingId === s.id) closeForm();
+                      // 预览 / 刷新中状态都重置
+                      if (preview && preview.id === s.id) setPreview(null);
+                      if (refreshingId === s.id) setRefreshingId(null);
+                      await reload();
+                      setMsg(`已删除「${s.name}」`);
+                    } catch (e) {
+                      setMsg("删除失败:" + (e as Error).message);
+                    }
                   }}
                 >
                   删除
@@ -254,16 +422,26 @@ export default function VpnPage() {
               <button onClick={() => setPreview(null)}>关闭</button>
             </div>
             {preview.nodes.length > 0 ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 4, overflow: "auto" }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                  overflow: "auto",
+                }}
+              >
                 {preview.nodes.map((n, i) => (
-                  <div key={i} style={{
-                    padding: "6px 10px",
-                    background: "var(--panel-2)",
-                    border: "1px solid var(--border-2)",
-                    borderRadius: 6,
-                    fontSize: 13,
-                    fontFamily: "monospace",
-                  }}>
+                  <div
+                    key={i}
+                    style={{
+                      padding: "6px 10px",
+                      background: "var(--panel-2)",
+                      border: "1px solid var(--border-2)",
+                      borderRadius: 6,
+                      fontSize: 13,
+                      fontFamily: "monospace",
+                    }}
+                  >
                     {i + 1}. {n}
                   </div>
                 ))}
@@ -271,32 +449,126 @@ export default function VpnPage() {
             ) : (
               <div className="cfg-note warn" style={{ marginBottom: 8 }}>
                 {preview.format === "v2ray-uri" || preview.format === "base64"
-                  ? "订阅返回的是 V2Ray/SS/Trojan URI 列表(非 Clash YAML)。已尽力提取节点名,但 mihomo 实际跑不了这种格式 — 多数机场支持在订阅 URL 末尾加 `&flag=clash`(或 `?flag=clash`)就会返 YAML,改完点「刷新」即可。"
+                  ? "订阅是 V2Ray/SS/Trojan URI 列表。系统已尝试自动转 Clash YAML,如果转换失败可能是协议不支持(hysteria2 / tuic / snell 等待支持)。"
+                  : preview.format === "surge"
+                  ? "订阅是 Surge 格式,mihomo 不直接支持。多数机场链接末尾加 &flag=clash 就能返 Clash YAML;改完点「刷新」即可。"
                   : preview.format === "unknown"
                   ? "无法识别订阅格式。看下面原始内容头部排查 — 常见原因:URL 错、token 过期、机场返了 HTML 错误页。"
-                  : "已用 Clash YAML 解析,但 proxies 字段为空。看下面原始内容确认订阅是不是空了。"}
+                  : "已用 Clash YAML 解析,但 proxies 字段为空。如果你在 Clash Verge 里能用,大概率是机场对 UA 做了 gating —— 本程序会自动尝试 clash.meta/mihomo/clash-verge 多个 UA。"}
               </div>
             )}
             <div className="muted" style={{ marginTop: 10 }}>
               原始内容头部(共 {preview.raw_len} 字节,只显示前 2000):
             </div>
-            <pre style={{
-              maxHeight: 240,
-              overflow: "auto",
-              background: "var(--panel-2)",
-              border: "1px solid var(--border-2)",
-              borderRadius: 7,
-              padding: 10,
-              fontSize: 11,
-              marginTop: 4,
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-all",
-            }}>
+            <pre
+              style={{
+                maxHeight: 240,
+                overflow: "auto",
+                background: "var(--panel-2)",
+                border: "1px solid var(--border-2)",
+                borderRadius: 7,
+                padding: 10,
+                fontSize: 11,
+                marginTop: 4,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+              }}
+            >
               {preview.raw_head || "(空)"}
             </pre>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function fmtLatency(ms: number | null | undefined): {
+  text: string;
+  color: string;
+} {
+  if (ms === undefined) return { text: "—", color: "var(--muted)" };
+  if (ms === null) return { text: "失败", color: "#c92a2a" };
+  if (ms < 200) return { text: `${ms}ms`, color: "#2f9e44" };
+  if (ms < 500) return { text: `${ms}ms`, color: "#f59f00" };
+  return { text: `${ms}ms`, color: "#e8590c" };
+}
+
+function NodeListWithLatency({
+  nodes,
+  latency,
+}: {
+  nodes: string[];
+  latency: Record<string, number | null | undefined>;
+}) {
+  // 按延迟排序:有结果的优先,小的在前,失败/未测的靠后
+  const ordered = [...nodes].sort((a, b) => {
+    const la = latency[a];
+    const lb = latency[b];
+    const va =
+      la === undefined ? 99998 : la === null ? 99999 : la;
+    const vb =
+      lb === undefined ? 99998 : lb === null ? 99999 : lb;
+    return va - vb;
+  });
+  const tested = Object.keys(latency).length;
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div className="muted" style={{ marginBottom: 4 }}>
+        节点:{nodes.length} 个{tested > 0 ? `(已测 ${tested})` : ""}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+          gap: 4,
+          maxHeight: 200,
+          overflow: "auto",
+          padding: "4px 6px",
+          background: "var(--panel-2)",
+          border: "1px solid var(--border-2)",
+          borderRadius: 6,
+        }}
+      >
+        {ordered.map((n) => {
+          const f = fmtLatency(latency[n]);
+          return (
+            <div
+              key={n}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 6,
+                padding: "2px 4px",
+                fontSize: 12,
+              }}
+            >
+              <span
+                style={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  fontFamily: "monospace",
+                }}
+                title={n}
+              >
+                {n}
+              </span>
+              <span
+                style={{
+                  color: f.color,
+                  fontWeight: 600,
+                  minWidth: 50,
+                  textAlign: "right",
+                }}
+              >
+                {f.text}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

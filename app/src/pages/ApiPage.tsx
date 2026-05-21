@@ -8,8 +8,11 @@ import {
   resetUsage,
   setActive,
   testProvider,
-  testProviderNode,
+  testVpnSubAll,
+  testVpnSubNode,
   upsertProvider,
+  getProviderBalance,
+  type BalanceResult,
   type ProvidersState,
   type ProviderTest,
   type UsageState,
@@ -21,6 +24,8 @@ interface PresetRow {
   label: string;
   model: string;
   extra: string; // JSON 文本
+  pinned?: boolean;
+  description?: string;
 }
 interface Draft {
   id?: string;
@@ -66,6 +71,9 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
   const [testing, setTesting] = useState<Record<string, boolean>>({});
   const [tested, setTested] = useState<Record<string, ProviderTest>>({});
   const [vpnSubs, setVpnSubs] = useState<VpnSub[]>([]);
+  const [testingAllNodes, setTestingAllNodes] = useState(false);
+  const [balances, setBalances] = useState<Record<string, BalanceResult>>({});
+  const [balLoading, setBalLoading] = useState<Record<string, boolean>>({});
 
   async function reload() {
     try {
@@ -87,6 +95,37 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
   useEffect(() => {
     reload();
   }, []);
+
+  async function loadBalance(pid: string) {
+    setBalLoading((m) => ({ ...m, [pid]: true }));
+    try {
+      const r = await getProviderBalance(pid);
+      setBalances((m) => ({ ...m, [pid]: r }));
+    } catch (e) {
+      setBalances((m) => ({
+        ...m,
+        [pid]: {
+          ok: false,
+          supported: true,
+          error: (e as Error).message,
+        },
+      }));
+    } finally {
+      setBalLoading((m) => ({ ...m, [pid]: false }));
+    }
+  }
+
+  // 列表加载后自动拉一次余量(只对已配 key 的 provider,而且不阻塞 UI)
+  useEffect(() => {
+    if (!ps) return;
+    for (const p of ps.providers) {
+      if (p.api_key_set && balances[p.id] === undefined) {
+        void loadBalance(p.id);
+      }
+    }
+    // 故意不依赖 balances 防止循环;新 provider 触发 ps 更新会重跑
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ps]);
 
   async function runTest(p: { id: string; presets: { label: string }[] }) {
     const label =
@@ -139,6 +178,8 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
             extra: Object.keys(pr.extra_body || {}).length
               ? JSON.stringify(pr.extra_body)
               : "",
+            pinned: !!pr.pinned,
+            description: pr.description || "",
           }))
         : [{ label: "默认", model: "", extra: "" }],
       use_vpn: !!p.use_vpn,
@@ -167,7 +208,13 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
           return;
         }
       }
-      presets.push({ label: r.label.trim(), model: r.model.trim(), extra_body });
+      presets.push({
+        label: r.label.trim(),
+        model: r.model.trim(),
+        extra_body,
+        pinned: !!r.pinned,
+        description: (r.description || "").trim(),
+      });
     }
     try {
       await upsertProvider({
@@ -272,23 +319,12 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                     {p.capability && (
                       <div className="muted">擅长：{p.capability}</div>
                     )}
-                    <div className="prov-presets">
-                      {p.presets.map((pr) => (
-                        <button
-                          key={pr.label}
-                          className={
-                            "chip" +
-                            (isActive && ps.active.preset_label === pr.label
-                              ? " on"
-                              : "")
-                          }
-                          onClick={() => makeActive(p.id, pr.label)}
-                          title="设为当前并用此预设"
-                        >
-                          {pr.label}
-                        </button>
-                      ))}
-                    </div>
+                    <ProviderPresetChips
+                      provider={p}
+                      isActive={isActive}
+                      activeLabel={ps.active.preset_label}
+                      onPick={(lbl) => makeActive(p.id, lbl)}
+                    />
                     <div className="prov-test">
                       <button
                         disabled={!!testing[p.id]}
@@ -311,6 +347,30 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                           </span>
                         ))}
                     </div>
+                    {p.use_vpn &&
+                      (p.vpn_nodes || []).length > 0 && (
+                        <VpnNodeSwitcher
+                          provider={p}
+                          onSwitch={async (node) => {
+                            try {
+                              await upsertProvider({
+                                id: p.id,
+                                vpn_node: node,
+                              });
+                              reload();
+                            } catch (e) {
+                              setErr((e as Error).message);
+                            }
+                          }}
+                        />
+                      )}
+                    {p.api_key_set && (
+                      <BalanceBar
+                        bal={balances[p.id]}
+                        loading={!!balLoading[p.id]}
+                        onRefresh={() => loadBalance(p.id)}
+                      />
+                    )}
                   </div>
                   {canManage && (
                     <div className="prov-actions">
@@ -440,8 +500,80 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                   </button>
                 </div>
               </label>
-              <div className="muted">
-                勾选要纳入的节点(可多选);测延迟看哪条最快;再用「●」选活跃节点(运行时实际用它,不会自动切)。
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div className="muted" style={{ flex: 1, minWidth: 200 }}>
+                  勾选要纳入的节点(可多选);测延迟看哪条最快;再用「●」选活跃节点(运行时实际用它,不会自动切)。
+                </div>
+                <button
+                  type="button"
+                  disabled={!draft.vpn_sub_id || testingAllNodes}
+                  title={
+                    !draft.vpn_sub_id
+                      ? "请先选订阅"
+                      : "并发 TCP 直连测订阅全部节点(不依赖 mihomo,不需要先保存)"
+                  }
+                  onClick={async () => {
+                    if (!draft.vpn_sub_id) return;
+                    setTestingAllNodes(true);
+                    const subNodes =
+                      vpnSubs.find((s) => s.id === draft.vpn_sub_id)?.nodes ||
+                      [];
+                    // 把全部节点置为"测试中"(undefined)
+                    setDraft({
+                      ...draft,
+                      vpn_node_latency: {
+                        ...draft.vpn_node_latency,
+                        ...Object.fromEntries(
+                          subNodes.map((n) => [
+                            n,
+                            undefined as unknown as number,
+                          ]),
+                        ),
+                      },
+                    });
+                    try {
+                      const r = await testVpnSubAll(draft.vpn_sub_id);
+                      const map: Record<string, number | null> = {
+                        ...draft.vpn_node_latency,
+                      };
+                      for (const item of r.results) {
+                        if (item.node)
+                          map[item.node] = item.ok ? item.ms ?? 0 : null;
+                      }
+                      setDraft((d) =>
+                        d ? { ...d, vpn_node_latency: map } : d,
+                      );
+                    } catch (e) {
+                      console.error(e);
+                    } finally {
+                      setTestingAllNodes(false);
+                    }
+                  }}
+                >
+                  {testingAllNodes ? (
+                    <>
+                      <span
+                        className="spinner"
+                        style={{
+                          width: 12,
+                          height: 12,
+                          borderWidth: 2,
+                          marginRight: 4,
+                        }}
+                      />
+                      测延迟中…
+                    </>
+                  ) : (
+                    "测全部延迟"
+                  )}
+                </button>
               </div>
               <div className="node-list">
                 {(
@@ -493,14 +625,10 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                       </span>
                       <button
                         type="button"
-                        disabled={!draft.id}
-                        title={
-                          draft.id
-                            ? "通过该节点 HEAD provider base_url,实测耗时"
-                            : "请先保存 provider 再测延迟"
-                        }
+                        disabled={!draft.vpn_sub_id}
+                        title="TCP 直连节点 server:port 测延迟(不依赖 mihomo,不需要先保存)"
                         onClick={async () => {
-                          if (!draft.id) return;
+                          if (!draft.vpn_sub_id) return;
                           setDraft({
                             ...draft,
                             vpn_node_latency: {
@@ -509,7 +637,10 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                             },
                           });
                           try {
-                            const r = await testProviderNode(draft.id, n);
+                            const r = await testVpnSubNode(
+                              draft.vpn_sub_id,
+                              n,
+                            );
                             setDraft((d) =>
                               d
                                 ? {
@@ -576,8 +707,9 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                 )}
               </div>
               <div className="muted">
-                需要 mihomo 二进制(放 D:\ai-helper\mihomo\mihomo.exe 或加 PATH)。
-                首次调用 / 测延迟时自动起子代理,关软件时一起停。
+                测延迟用 TCP 直连,不依赖 mihomo。
+                真正调用 API 时才会启 mihomo 子代理(需要 mihomo.exe,放
+                D:\ai-helper\mihomo\mihomo.exe 或加 PATH),关软件时一起停。
               </div>
             </>
           )}
@@ -596,12 +728,40 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                 try {
                   const r = await discoverProviderModels(base, {
                     api_key: draft.api_key.trim() || undefined,
-                    provider_id: draft.id, // 已存的 provider → 借其 VPN 探
+                    provider_id: draft.id,
+                    // 草稿态:直传订阅 + 活跃节点,不必先保存
+                    vpn_sub_id: draft.use_vpn
+                      ? draft.vpn_sub_id || undefined
+                      : undefined,
+                    vpn_node: draft.use_vpn
+                      ? draft.vpn_node || undefined
+                      : undefined,
                   });
                   if (!r.models.length) {
-                    setErr(
-                      "未发现模型(地址不可达?或不是 Ollama / OpenAI 兼容接口)"
-                    );
+                    const errs = (r.errors || []).join(" | ");
+                    let hint: string;
+                    if (errs.toLowerCase().includes("user location")) {
+                      hint =
+                        "Gemini 拒绝当前节点出口地区(User location is not supported)—— 不是 key 问题。该机场节点 IP 在 Google 黑名单。请回 VPN 管理页换其他节点(优先试日本/新加坡/台湾 anytls;美国机房 IP 通常被禁),然后重新点自动发现。详情:" +
+                        errs.slice(0, 400);
+                    } else if (errs.includes("401") || errs.includes("403")) {
+                      hint =
+                        "API key 鉴权失败(401/403),检查 key 是否正确、是否已启用。详情:" +
+                        errs.slice(0, 400);
+                    } else if (errs) {
+                      hint =
+                        "未发现模型 — " +
+                        (draft.use_vpn
+                          ? "走 VPN 但仍报错。"
+                          : "Gemini/OpenAI 需勾「走 VPN」。") +
+                        "详情:" +
+                        errs.slice(0, 400);
+                    } else {
+                      hint = draft.use_vpn
+                        ? "未发现模型(走 VPN 也连不上?试试换节点)"
+                        : "未发现模型(Gemini/OpenAI 这类要勾「走 VPN」)";
+                    }
+                    setErr(hint);
                     return;
                   }
                   // 合并到预设(去重),label = model = 发现到的名字
@@ -627,45 +787,86 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
             </button>
           </div>
           {draft.presets.map((r, i) => (
-            <div key={i} className="preset-row">
-              <input
-                placeholder="标签 如 V4 Pro·思考"
-                value={r.label}
-                onChange={(e) => {
-                  const ps2 = [...draft.presets];
-                  ps2[i] = { ...r, label: e.target.value };
-                  setDraft({ ...draft, presets: ps2 });
-                }}
-              />
-              <input
-                placeholder="模型 id 如 deepseek-v4-pro"
-                value={r.model}
-                onChange={(e) => {
-                  const ps2 = [...draft.presets];
-                  ps2[i] = { ...r, model: e.target.value };
-                  setDraft({ ...draft, presets: ps2 });
-                }}
-              />
-              <input
-                placeholder='额外参数JSON 如 {"thinking":{"type":"enabled"}}'
-                value={r.extra}
-                onChange={(e) => {
-                  const ps2 = [...draft.presets];
-                  ps2[i] = { ...r, extra: e.target.value };
-                  setDraft({ ...draft, presets: ps2 });
-                }}
-              />
-              <button
-                className="danger"
-                onClick={() =>
-                  setDraft({
-                    ...draft,
-                    presets: draft.presets.filter((_, j) => j !== i),
-                  })
-                }
+            <div
+              key={i}
+              className="preset-row"
+              style={{
+                flexDirection: "column",
+                alignItems: "stretch",
+                gap: 4,
+              }}
+            >
+              <div
+                style={{ display: "flex", gap: 6, alignItems: "center" }}
               >
-                ×
-              </button>
+                <button
+                  type="button"
+                  title={r.pinned ? "已置顶 — 点击取消" : "置顶此预设(聚合器仅置顶可被自动路由)"}
+                  onClick={() => {
+                    const ps2 = [...draft.presets];
+                    ps2[i] = { ...r, pinned: !r.pinned };
+                    setDraft({ ...draft, presets: ps2 });
+                  }}
+                  style={{
+                    padding: "4px 8px",
+                    color: r.pinned ? "#f59f00" : "var(--muted)",
+                    fontSize: 16,
+                  }}
+                >
+                  {r.pinned ? "★" : "☆"}
+                </button>
+                <input
+                  placeholder="标签 如 V4 Pro·思考"
+                  value={r.label}
+                  style={{ flex: "1 1 140px" }}
+                  onChange={(e) => {
+                    const ps2 = [...draft.presets];
+                    ps2[i] = { ...r, label: e.target.value };
+                    setDraft({ ...draft, presets: ps2 });
+                  }}
+                />
+                <input
+                  placeholder="模型 id 如 deepseek-v4-pro"
+                  value={r.model}
+                  style={{ flex: "2 1 220px" }}
+                  onChange={(e) => {
+                    const ps2 = [...draft.presets];
+                    ps2[i] = { ...r, model: e.target.value };
+                    setDraft({ ...draft, presets: ps2 });
+                  }}
+                />
+                <input
+                  placeholder='额外参数JSON 如 {"thinking":{"type":"enabled"}}'
+                  value={r.extra}
+                  style={{ flex: "1 1 200px" }}
+                  onChange={(e) => {
+                    const ps2 = [...draft.presets];
+                    ps2[i] = { ...r, extra: e.target.value };
+                    setDraft({ ...draft, presets: ps2 });
+                  }}
+                />
+                <button
+                  className="danger"
+                  onClick={() =>
+                    setDraft({
+                      ...draft,
+                      presets: draft.presets.filter((_, j) => j !== i),
+                    })
+                  }
+                >
+                  ×
+                </button>
+              </div>
+              <input
+                placeholder="描述(可选) — 例如「便宜快;闲聊用」「推理强;复杂任务用」(自动路由会读这条)"
+                value={r.description || ""}
+                style={{ marginLeft: 32, fontSize: 12 }}
+                onChange={(e) => {
+                  const ps2 = [...draft.presets];
+                  ps2[i] = { ...r, description: e.target.value };
+                  setDraft({ ...draft, presets: ps2 });
+                }}
+              />
             </div>
           ))}
           <button
@@ -743,6 +944,353 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
               暂无用量记录。发起对话后，支持 usage 的云端 API 会自动累计。
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 与后端 is_aggregator 同步
+const AGG_HOSTS = [
+  "openrouter.ai", "together.xyz", "siliconflow",
+  "deepinfra.com", "huggingface.co", "portkey.ai", "anyscale.com",
+];
+function isAggregator(base_url: string): boolean {
+  try {
+    const h = new URL(base_url).hostname.toLowerCase();
+    return AGG_HOSTS.some((k) => h.includes(k));
+  } catch {
+    return false;
+  }
+}
+
+function ProviderPresetChips({
+  provider,
+  isActive,
+  activeLabel,
+  onPick,
+}: {
+  provider: import("../api").ProviderInfo;
+  isActive: boolean;
+  activeLabel: string;
+  onPick: (label: string) => void;
+}) {
+  const agg = isAggregator(provider.base_url);
+  const [showAll, setShowAll] = useState(false);
+  const pinned = provider.presets.filter((p) => p.pinned);
+  // 聚合器:默认只显示 pinned;非聚合器或没置顶时显示全部(但有上限)
+  let visible = provider.presets;
+  if (agg && !showAll) visible = pinned;
+  const cap = agg ? 12 : 30;
+  const truncated = visible.length > cap;
+  if (truncated) visible = visible.slice(0, cap);
+  return (
+    <div>
+      <div className="prov-presets">
+        {visible.map((pr) => (
+          <button
+            key={pr.label}
+            className={
+              "chip" +
+              (isActive && activeLabel === pr.label ? " on" : "")
+            }
+            onClick={() => onPick(pr.label)}
+            title={
+              pr.description
+                ? `${pr.model} — ${pr.description}`
+                : pr.model
+            }
+          >
+            {pr.pinned && <span style={{ color: "#f59f00" }}>★</span>}
+            {pr.label}
+          </button>
+        ))}
+        {agg && pinned.length === 0 && !showAll && (
+          <span className="muted" style={{ fontSize: 12 }}>
+            (聚合器 — 请到编辑页 ★ 置顶常用的几个,自动路由也仅使用置顶)
+          </span>
+        )}
+      </div>
+      {agg && provider.presets.length > pinned.length && (
+        <button
+          type="button"
+          onClick={() => setShowAll((v) => !v)}
+          className="cfg-toggle"
+          style={{ fontSize: 11, padding: "2px 8px", marginTop: 4 }}
+        >
+          {showAll
+            ? `↑ 折叠(只显示 ${pinned.length} 个置顶)`
+            : `↓ 显示全部 ${provider.presets.length} 个模型`}
+        </button>
+      )}
+      {truncated && !agg && (
+        <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+          已显示前 {cap} 个,完整请在编辑页查看
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VpnNodeSwitcher({
+  provider,
+  onSwitch,
+}: {
+  provider: import("../api").ProviderInfo;
+  onSwitch: (node: string) => Promise<void> | void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const cands = provider.vpn_nodes || [];
+  const lat = provider.vpn_node_latency || {};
+  const active = provider.vpn_node || "";
+  // 按延迟排序,活跃节点置顶
+  const sorted = [...cands].sort((a, b) => {
+    if (a === active) return -1;
+    if (b === active) return 1;
+    const va = lat[a];
+    const vb = lat[b];
+    const xa = va === undefined ? 99998 : va === null ? 99999 : va;
+    const xb = vb === undefined ? 99998 : vb === null ? 99999 : vb;
+    return xa - xb;
+  });
+  return (
+    <div style={{ marginTop: 6, fontSize: 12 }}>
+      <div className="muted" style={{ marginBottom: 3 }}>
+        VPN 节点(点击切换；按延迟排序)
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+        {sorted.map((n) => {
+          const isAct = n === active;
+          const l = lat[n];
+          let color = "var(--muted)";
+          if (l != null) {
+            if (l < 200) color = "#2f9e44";
+            else if (l < 500) color = "#f59f00";
+            else color = "#e8590c";
+          } else if (l === null) color = "#c92a2a";
+          const isBusy = busy === n;
+          return (
+            <button
+              key={n}
+              disabled={busy != null}
+              className={"chip" + (isAct ? " on" : "")}
+              title={
+                l === undefined
+                  ? "未测延迟"
+                  : l === null
+                  ? "上次测延迟失败"
+                  : `${l}ms`
+              }
+              style={{ fontSize: 11, padding: "3px 8px" }}
+              onClick={async () => {
+                if (isAct) return;
+                setBusy(n);
+                try {
+                  await onSwitch(n);
+                } finally {
+                  setBusy(null);
+                }
+              }}
+            >
+              <span
+                style={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  maxWidth: 180,
+                  display: "inline-block",
+                  verticalAlign: "middle",
+                }}
+              >
+                {n}
+              </span>
+              {l !== undefined && (
+                <span
+                  style={{
+                    color: isAct ? "inherit" : color,
+                    marginLeft: 4,
+                    fontWeight: 600,
+                  }}
+                >
+                  {l === null ? "✖" : `${l}ms`}
+                </span>
+              )}
+              {isBusy && (
+                <span
+                  className="spinner"
+                  style={{
+                    width: 9,
+                    height: 9,
+                    borderWidth: 2,
+                    marginLeft: 4,
+                  }}
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function fmtMoney(n: number, currency = "USD"): string {
+  const sym = currency === "CNY" ? "¥" : currency === "USD" ? "$" : "";
+  if (n >= 100) return `${sym}${n.toFixed(0)} ${sym ? "" : currency}`.trim();
+  if (n >= 1) return `${sym}${n.toFixed(2)} ${sym ? "" : currency}`.trim();
+  return `${sym}${n.toFixed(4)} ${sym ? "" : currency}`.trim();
+}
+
+function BalanceBar({
+  bal,
+  loading,
+  onRefresh,
+}: {
+  bal: BalanceResult | undefined;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  if (loading && !bal) {
+    return (
+      <div
+        className="muted"
+        style={{ fontSize: 12, marginTop: 6, display: "flex", gap: 6 }}
+      >
+        <span
+          className="spinner"
+          style={{ width: 11, height: 11, borderWidth: 2 }}
+        />
+        查询余量中…
+      </div>
+    );
+  }
+  if (!bal) return null;
+  if (!bal.supported) {
+    return (
+      <div
+        className="muted"
+        style={{ fontSize: 12, marginTop: 6 }}
+        title={bal.error || ""}
+      >
+        余量：该 host 未提供查询端点
+      </div>
+    );
+  }
+  if (!bal.ok) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          marginTop: 6,
+          fontSize: 12,
+        }}
+      >
+        <span className="badge warn" title={bal.error || ""}>
+          余量查询失败
+        </span>
+        <button
+          onClick={onRefresh}
+          disabled={loading}
+          style={{ padding: "2px 8px", fontSize: 11 }}
+        >
+          {loading ? "刷新中" : "重试"}
+        </button>
+        {bal.error && (
+          <span
+            className="muted"
+            style={{
+              fontSize: 11,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              maxWidth: 320,
+            }}
+          >
+            {bal.error}
+          </span>
+        )}
+      </div>
+    );
+  }
+  const cur = bal.currency || "USD";
+  const total = bal.total;
+  const used = bal.used;
+  const remain = bal.remaining;
+  const pct =
+    total && total > 0 && remain != null
+      ? Math.max(0, Math.min(100, (remain / total) * 100))
+      : null;
+  const lowOnFumes = pct != null && pct < 15;
+  return (
+    <div style={{ marginTop: 8, fontSize: 12 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 3,
+        }}
+      >
+        <span className="muted">余量</span>
+        {remain != null && (
+          <span
+            style={{
+              fontWeight: 600,
+              color: lowOnFumes ? "#c92a2a" : "var(--text)",
+            }}
+          >
+            {fmtMoney(remain, cur)}
+          </span>
+        )}
+        {total != null && (
+          <span className="muted">/ {fmtMoney(total, cur)}</span>
+        )}
+        {used != null && total == null && (
+          <span className="muted">已用 {fmtMoney(used, cur)}</span>
+        )}
+        {bal.via_vpn && (
+          <span className="badge" style={{ fontSize: 10 }}>
+            走 VPN
+          </span>
+        )}
+        <button
+          onClick={onRefresh}
+          disabled={loading}
+          title="刷新余量"
+          style={{
+            marginLeft: "auto",
+            padding: "1px 8px",
+            fontSize: 11,
+            opacity: loading ? 0.6 : 1,
+          }}
+        >
+          {loading ? "…" : "↻"}
+        </button>
+      </div>
+      {pct != null && (
+        <div
+          style={{
+            height: 6,
+            background: "var(--panel-2)",
+            border: "1px solid var(--border-2)",
+            borderRadius: 4,
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              width: `${pct}%`,
+              height: "100%",
+              background: lowOnFumes
+                ? "#c92a2a"
+                : pct < 40
+                ? "#f59f00"
+                : "#2f9e44",
+              transition: "width .3s",
+            }}
+          />
         </div>
       )}
     </div>

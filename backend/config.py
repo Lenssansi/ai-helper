@@ -353,17 +353,19 @@ def mask_provider(p: dict[str, Any]) -> dict[str, Any]:
 
 def discover_models(base_url: str,
                      api_key: str | None = None,
-                     proxy: str | None = None) -> list[str]:
-    """给前端「自动发现」按钮:先试 Ollama /api/tags,再试多种 OpenAI 兼容路径。
-    api_key 给则带 Bearer(Gemini/OpenAI/Anthropic 都需要);proxy 给则走 VPN。"""
+                     proxy: str | None = None) -> dict[str, Any]:
+    """探测可用模型。返回 {models: [...], errors: [...]}。
+    errors 给前端看具体原因(Gemini 经常返 'User location is not supported',
+    机场节点 IP 在 Google 黑名单导致;这种情况不是 key 错,是节点不行)。"""
     base = (base_url or "").rstrip("/")
     if not base:
-        return []
+        return {"models": [], "errors": ["base_url 为空"]}
+    errors: list[str] = []
     # 不带 key 时 Ollama 优先(本机一般免认证)
     if not api_key:
         ms = _ollama_models(base)
         if ms:
-            return ms
+            return {"models": ms, "errors": []}
     # 尝试多种 OpenAI 兼容路径:Gemini 是 .../openai/models 不是 .../v1/models
     candidates = []
     if base.endswith("/v1") or base.endswith("/openai"):
@@ -376,7 +378,7 @@ def discover_models(base_url: str,
         headers["Authorization"] = f"Bearer {api_key}"
     for url in candidates:
         try:
-            with httpx.Client(timeout=5.0, headers=headers, proxy=proxy,
+            with httpx.Client(timeout=10.0, headers=headers, proxy=proxy,
                               follow_redirects=True) as c:
                 r = c.get(url)
             if r.status_code == 200:
@@ -386,10 +388,25 @@ def discover_models(base_url: str,
                 ids = [i.split("/", 1)[-1] if i.startswith("models/")
                         else i for i in ids]
                 if ids:
-                    return ids
-        except (httpx.HTTPError, ValueError, KeyError):
-            continue
-    return []
+                    return {"models": ids, "errors": []}
+                errors.append(f"{url} 200 但模型列表为空")
+            else:
+                # 抽错误正文最关键的一行
+                msg = ""
+                try:
+                    body = r.json()
+                    if isinstance(body, dict):
+                        err = body.get("error", body)
+                        if isinstance(err, dict):
+                            msg = err.get("message") or err.get("status") or ""
+                        elif isinstance(err, str):
+                            msg = err
+                except Exception:  # noqa: BLE001
+                    msg = r.text[:200]
+                errors.append(f"{r.status_code} {url}: {msg[:300]}")
+        except httpx.HTTPError as e:
+            errors.append(f"{url}: {type(e).__name__} {str(e)[:200]}")
+    return {"models": [], "errors": errors}
 
 
 def public_state() -> dict[str, Any]:
@@ -503,17 +520,47 @@ def resolve_tool_capable() -> tuple[dict[str, Any] | None, str]:
     )
 
 
+_AGGREGATOR_HOSTS = (
+    "openrouter.ai", "together.xyz", "siliconflow",
+    "deepinfra.com", "huggingface.co",
+    # CF AI Gateway 路径里包含 ai-gateway,以及 portkey 这类
+    "portkey.ai", "anyscale.com",
+)
+
+
+def is_aggregator(base_url: str) -> bool:
+    """通过 base_url host 判断是否聚合器(几百个模型混杂)。"""
+    if not base_url:
+        return False
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except ValueError:
+        return False
+    return any(k in host for k in _AGGREGATOR_HOSTS)
+
+
 def providers_for_router() -> list[dict[str, Any]]:
-    """给路由器看的精简清单（无密钥）。"""
+    """给路由器看的精简清单（无密钥）。聚合器的 presets 仅返已置顶的。"""
     s = load_settings()
     out = []
     for p in s["providers"]:
+        agg = is_aggregator(p.get("base_url", ""))
+        presets_full = p.get("presets", [])
+        if agg:
+            allowed = [x for x in presets_full if x.get("pinned")]
+        else:
+            allowed = presets_full
         out.append({
             "id": p["id"],
             "name": p.get("name", ""),
             "capability": p.get("capability", ""),
             "has_key": bool(p.get("api_key")),
-            "presets": [x["label"] for x in p.get("presets", [])],
+            "aggregator": agg,
+            "presets": [
+                {"label": x["label"], "description": x.get("description", "")}
+                for x in allowed
+            ],
         })
     return out
 

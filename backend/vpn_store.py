@@ -54,14 +54,24 @@ def _public(s: dict[str, Any]) -> dict[str, Any]:
         "total": s.get("total"),
         "nodes": s.get("nodes", []),
         "rules": s.get("rules", []),
+        "converted_from_uri": bool(s.get("converted_from_uri")),
     }
 
 
 def list_subs() -> list[dict[str, Any]]:
     items = _load()
-    # 自愈:解析器升级后,旧订阅 nodes 为空就重解析(无需用户手动刷新)
+    # 自愈:① V2Ray URI/base64 旧订阅转 Clash YAML;② 节点列表重解析
     healed = False
     for s in items:
+        raw = s.get("yaml_content") or ""
+        if raw and not s.get("converted_from_uri"):
+            fmt = detect_format(raw)
+            if fmt in ("v2ray-uri", "base64"):
+                conv = _convert_uri_list_to_clash(raw)
+                if conv:
+                    s["yaml_content"] = conv
+                    s["converted_from_uri"] = True
+                    healed = True
         if not s.get("nodes") and s.get("yaml_content"):
             ns = _parse_yaml_nodes(s["yaml_content"])
             if ns:
@@ -200,18 +210,287 @@ def _parse_yaml_nodes(yaml_text: str) -> list[str]:
     return names
 
 
+# ---------- V2Ray / SS / Trojan / VLESS URI → Clash YAML 转换 ----------
+# 机场默认返 base64(URI 列表),mihomo 跑不了;Clash Verge 内置转过去能用。
+# 我们这里也做同样的事:解 URI 一条条变成 Clash 风格的 proxy dict,然后
+# yaml.dump 出来作为 yaml_content 落盘,后续 mihomo 直接用就能跑。
+
+def _decode_b64_loose(s: str) -> str:
+    """容错 base64 解码,失败返回 ''。"""
+    import base64
+    compact = re.sub(r"\s+", "", s)
+    if not compact:
+        return ""
+    pad = "=" * (-len(compact) % 4)
+    for fn in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            return fn(compact + pad).decode("utf-8", errors="ignore")
+        except Exception:  # noqa: BLE001
+            continue
+    return ""
+
+
+def _name_from_fragment(uri: str, fallback: str) -> str:
+    from urllib.parse import unquote
+    if "#" in uri:
+        return unquote(uri.rsplit("#", 1)[1]).strip() or fallback
+    return fallback
+
+
+def _parse_ss(uri: str) -> dict | None:
+    """ss://[base64(method:password)]@server:port#name
+    或 ss://base64(method:password@server:port)#name(旧格式)。"""
+    from urllib.parse import urlparse
+    body = uri[5:]  # 去 ss://
+    name_part = body.split("#", 1)[1] if "#" in body else ""
+    body = body.split("#", 1)[0]
+    # 旧格式:整体 base64
+    if "@" not in body:
+        dec = _decode_b64_loose(body)
+        if "@" in dec:
+            body = dec
+    if "@" not in body:
+        return None
+    cred, addr = body.rsplit("@", 1)
+    # cred 可能是 base64(method:password)
+    if ":" not in cred:
+        dec = _decode_b64_loose(cred)
+        if ":" in dec:
+            cred = dec
+    if ":" not in cred or ":" not in addr:
+        return None
+    method, password = cred.split(":", 1)
+    try:
+        server, port = addr.rsplit(":", 1)
+        port = int(port.split("/", 1)[0].split("?", 1)[0])
+    except (ValueError, IndexError):
+        return None
+    from urllib.parse import unquote
+    return {
+        "name": unquote(name_part) or f"ss-{server}",
+        "type": "ss",
+        "server": server,
+        "port": port,
+        "cipher": method,
+        "password": password,
+    }
+
+
+def _parse_trojan(uri: str) -> dict | None:
+    """trojan://password@server:port?security=tls&sni=...#name"""
+    from urllib.parse import unquote, urlparse, parse_qs
+    try:
+        u = urlparse(uri)
+        password = unquote(u.username or "")
+        server = u.hostname or ""
+        port = u.port or 443
+        q = parse_qs(u.query)
+        name = unquote(u.fragment) if u.fragment else f"trojan-{server}"
+        proxy: dict = {
+            "name": name, "type": "trojan",
+            "server": server, "port": port, "password": password,
+            "udp": True,
+        }
+        sni = q.get("sni", [None])[0] or q.get("peer", [None])[0]
+        if sni:
+            proxy["sni"] = sni
+        skip = q.get("allowInsecure", q.get("insecure", ["0"]))[0]
+        if skip in ("1", "true"):
+            proxy["skip-cert-verify"] = True
+        return proxy if server and password else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _parse_vmess(uri: str) -> dict | None:
+    """vmess://base64(json)"""
+    import json as _json
+    body = uri[8:]  # 去 vmess://
+    dec = _decode_b64_loose(body)
+    try:
+        obj = _json.loads(dec)
+    except Exception:  # noqa: BLE001
+        return None
+    name = (obj.get("ps") or obj.get("remarks") or obj.get("name")
+             or f"vmess-{obj.get('add', '')}")
+    try:
+        port = int(obj.get("port") or 443)
+    except (ValueError, TypeError):
+        port = 443
+    proxy = {
+        "name": str(name)[:200],
+        "type": "vmess",
+        "server": obj.get("add") or "",
+        "port": port,
+        "uuid": obj.get("id") or "",
+        "alterId": int(obj.get("aid") or 0),
+        "cipher": obj.get("scy") or obj.get("security") or "auto",
+        "udp": True,
+    }
+    net = obj.get("net") or "tcp"
+    if net != "tcp":
+        proxy["network"] = net
+    tls = obj.get("tls") or ""
+    if tls == "tls":
+        proxy["tls"] = True
+        sni = obj.get("sni") or obj.get("host")
+        if sni:
+            proxy["servername"] = sni
+    # WS / gRPC 选项
+    if net == "ws":
+        ws_opts: dict = {}
+        path = obj.get("path")
+        if path:
+            ws_opts["path"] = path
+        host = obj.get("host")
+        if host:
+            ws_opts["headers"] = {"Host": host}
+        if ws_opts:
+            proxy["ws-opts"] = ws_opts
+    elif net == "grpc":
+        gn = obj.get("path") or obj.get("serviceName")
+        if gn:
+            proxy["grpc-opts"] = {"grpc-service-name": gn}
+    return proxy if proxy["server"] and proxy["uuid"] else None
+
+
+def _parse_vless(uri: str) -> dict | None:
+    """vless://uuid@server:port?security=tls&sni=...&type=ws&path=...#name"""
+    from urllib.parse import unquote, urlparse, parse_qs
+    try:
+        u = urlparse(uri)
+        uuid_v = unquote(u.username or "")
+        server = u.hostname or ""
+        port = u.port or 443
+        q = parse_qs(u.query)
+        name = unquote(u.fragment) if u.fragment else f"vless-{server}"
+        proxy: dict = {
+            "name": name, "type": "vless",
+            "server": server, "port": port, "uuid": uuid_v,
+            "udp": True,
+        }
+        if q.get("security", [""])[0] in ("tls", "reality"):
+            proxy["tls"] = True
+            sni = q.get("sni", q.get("peer", [None]))[0]
+            if sni:
+                proxy["servername"] = sni
+        net = q.get("type", ["tcp"])[0]
+        if net != "tcp":
+            proxy["network"] = net
+        if net == "ws":
+            ws_opts: dict = {}
+            p = q.get("path", [None])[0]
+            if p:
+                ws_opts["path"] = p
+            h = q.get("host", [None])[0]
+            if h:
+                ws_opts["headers"] = {"Host": h}
+            if ws_opts:
+                proxy["ws-opts"] = ws_opts
+        flow = q.get("flow", [None])[0]
+        if flow:
+            proxy["flow"] = flow
+        return proxy if server and uuid_v else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _convert_uri_list_to_clash(text: str) -> str:
+    """V2Ray base64 / URI 列表 → Clash YAML(可用)。失败返 ''。"""
+    import yaml as _yaml
+
+    # 先 base64 解一次
+    raw = text.strip()
+    decoded = _decode_b64_loose(raw)
+    candidate = decoded if "://" in decoded else raw
+
+    proxies: list[dict] = []
+    seen_names: set[str] = set()
+    for line in candidate.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        proto = s.split("://", 1)[0].lower() if "://" in s else ""
+        proxy: dict | None = None
+        if proto == "ss":
+            proxy = _parse_ss(s)
+        elif proto == "trojan":
+            proxy = _parse_trojan(s)
+        elif proto == "vmess":
+            proxy = _parse_vmess(s)
+        elif proto == "vless":
+            proxy = _parse_vless(s)
+        # 其它协议(hysteria2/tuic/snell)mihomo 也支持但格式各异,
+        # 先跳过免误转;后续再扩
+        if not proxy:
+            continue
+        # 名字去重
+        base_name = str(proxy.get("name") or "")[:200]
+        nm = base_name
+        n = 2
+        while nm in seen_names:
+            nm = f"{base_name} ({n})"
+            n += 1
+        proxy["name"] = nm
+        seen_names.add(nm)
+        proxies.append(proxy)
+    if not proxies:
+        return ""
+    # 生成 Clash YAML
+    config = {
+        "mixed-port": 7890,
+        "mode": "rule",
+        "log-level": "info",
+        "proxies": proxies,
+        "proxy-groups": [{
+            "name": "PROXY",
+            "type": "select",
+            "proxies": [p["name"] for p in proxies],
+        }],
+        "rules": ["MATCH,PROXY"],
+    }
+    return _yaml.dump(config, allow_unicode=True, sort_keys=False)
+
+
+def maybe_convert(text: str) -> tuple[str, bool]:
+    """订阅原始内容若非 Clash YAML,尝试转。返回 (最终 yaml, 是否转过)。"""
+    if not text or not text.strip():
+        return text, False
+    fmt = detect_format(text)
+    if fmt == "clash-yaml":
+        return text, False
+    if fmt in ("v2ray-uri", "base64"):
+        conv = _convert_uri_list_to_clash(text)
+        if conv:
+            return conv, True
+    return text, False
+
+
 def detect_format(yaml_text: str) -> str:
     """诊断订阅内容格式,用于前端预览/排错。"""
     if not yaml_text:
         return "empty"
-    head = yaml_text.lstrip()[:200]
-    if re.match(r"^(proxies|Proxy)\s*:", head, re.M):
+    # 1) Clash YAML:扫整个文本(proxies 行可能在很后面),
+    #    或直接试 PyYAML —— 解出 dict 且含 proxies 键就算
+    if re.search(r"^(proxies|Proxy)\s*:", yaml_text, re.M):
         return "clash-yaml"
-    if "://" in head and re.search(
-        r"^(vmess|vless|ss|ssr|trojan|hysteria2?|tuic)://", head, re.M | re.I
+    try:
+        import yaml as _yaml
+        d = _yaml.safe_load(yaml_text)
+        if isinstance(d, dict) and ("proxies" in d or "Proxy" in d):
+            return "clash-yaml"
+    except Exception:  # noqa: BLE001
+        pass
+    # 2) V2Ray URI 裸文本
+    if re.search(
+        r"^(vmess|vless|ss|ssr|trojan|hysteria2?|tuic|anytls)://",
+        yaml_text, re.M | re.I,
     ):
         return "v2ray-uri"
-    # 看着像 base64:只含 base64 字符 + 长度合理
+    # 3) Surge 配置(以 #!MANAGED-CONFIG 开头)
+    if yaml_text.lstrip().startswith("#!MANAGED-CONFIG"):
+        return "surge"
+    # 4) 看着像 base64:只含 base64 字符 + 长度合理
     compact = re.sub(r"\s+", "", yaml_text)
     if compact and len(compact) > 32 and all(
         c.isalnum() or c in "+/=-_" for c in compact[:400]
@@ -234,14 +513,79 @@ def _parse_sub_info(header: str) -> dict[str, int]:
 
 
 def _fetch_url(url: str) -> tuple[str, dict[str, int]]:
-    """拉取订阅 URL,返回 (yaml_text, sub_info_dict)。"""
-    headers = {"User-Agent": "ClashforWindows/0.20.39"}  # 多数订阅源识别这个 UA
-    with httpx.Client(timeout=20.0, follow_redirects=True,
-                       headers=headers) as c:
-        r = c.get(url)
-    r.raise_for_status()
-    info = _parse_sub_info(r.headers.get("subscription-userinfo", ""))
-    return r.text, info
+    """拉取订阅 URL,返回 (yaml_text, sub_info_dict)。
+    机场会按 UA gating:旧的 ClashforWindows 给阉割版/空配置,
+    给 clash.meta / mihomo / clash-verge 才给完整新协议(anytls/hysteria2…)。
+    所以按 UA 优先级链拉,选 proxies 数最多的那次返回。
+    同时若发现 Clash YAML 但 proxies 为空且 URL 带了 flag=clash,
+    自动剥 flag=clash 再试拿 base64 URI(走转换器)。"""
+    # 顺序很关键:先试支持新协议的 UA(给完整内容),再回退旧 UA
+    ua_chain = [
+        "clash.meta/v1.18.0",
+        "mihomo/1.18.7",
+        "clash-verge/v1.7.7",
+        "Clash/v1.18.0",
+        "ClashforWindows/0.20.39",
+    ]
+
+    def _proxy_count(t: str) -> int:
+        try:
+            return len(_try_parse_clash_yaml(t)) if t else 0
+        except Exception:  # noqa: BLE001
+            return 0
+
+    best_text = ""
+    best_info: dict[str, int] = {}
+    best_count = -1
+    last_err: Exception | None = None
+    for ua in ua_chain:
+        try:
+            with httpx.Client(timeout=20.0, follow_redirects=True,
+                              headers={"User-Agent": ua}) as c:
+                r = c.get(url)
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            last_err = e
+            continue
+        text = r.text
+        info = _parse_sub_info(r.headers.get("subscription-userinfo", ""))
+        cnt = _proxy_count(text)
+        # base64 URI 也算"有内容"(后面 maybe_convert 会处理)
+        if cnt == 0 and detect_format(text) in ("base64", "v2ray-uri"):
+            cnt = max(1, text.count("://"))
+        if cnt > best_count:
+            best_count = cnt
+            best_text = text
+            best_info = info or best_info
+            if cnt > 0 and ua == ua_chain[0]:
+                # 第一个 UA 就拿到节点,不必再试
+                break
+    if not best_text:
+        if last_err:
+            raise last_err
+        raise httpx.HTTPError("订阅 URL 所有 UA 都失败")
+
+    # 兜底:Clash YAML 但 proxies 为空且 URL 带了 flag=clash → 剥掉重拉
+    if (best_count == 0 and detect_format(best_text) == "clash-yaml"
+            and re.search(r"[?&]flag=clash\b", url, re.I)):
+        url2 = re.sub(r"[?&]flag=clash\b", "", url, flags=re.I)
+        url2 = re.sub(r"\?&", "?", url2).rstrip("?&")
+        try:
+            with httpx.Client(
+                timeout=20.0, follow_redirects=True,
+                headers={"User-Agent": "mihomo/1.18.7"},
+            ) as c2:
+                r2 = c2.get(url2)
+            r2.raise_for_status()
+            if r2.text and r2.text.strip():
+                best_text = r2.text
+                info2 = _parse_sub_info(
+                    r2.headers.get("subscription-userinfo", ""))
+                if info2:
+                    best_info = info2
+        except httpx.HTTPError:
+            pass
+    return best_text, best_info
 
 
 def add_sub(name: str, url: str | None = None,
@@ -258,6 +602,8 @@ def add_sub(name: str, url: str | None = None,
             raise ValueError(f"拉取订阅失败:{e}") from e
     if not yaml_text.strip():
         raise ValueError("订阅内容为空(URL 没下载到 / YAML 没填)")
+    # 机场常返 base64(V2Ray URI),mihomo 跑不了 → 先转 Clash YAML
+    yaml_text, converted = maybe_convert(yaml_text)
     nodes = _parse_yaml_nodes(yaml_text)
     rec = {
         "id": sid,
@@ -271,6 +617,7 @@ def add_sub(name: str, url: str | None = None,
         "total": info.get("total"),
         "expire": info.get("expire"),
         "nodes": nodes,
+        "converted_from_uri": converted,
     }
     items.append(rec)
     _save(items)
@@ -297,8 +644,10 @@ def refresh_sub(sid: str) -> dict[str, Any]:
             yaml_text, info = _fetch_url(s["url"])
         except (httpx.HTTPError, ValueError, RuntimeError) as e:
             raise ValueError(f"刷新失败:{e}") from e
+        yaml_text, converted = maybe_convert(yaml_text)
         s["yaml_content"] = yaml_text
         s["updated"] = int(time.time())
+        s["converted_from_uri"] = converted
         if "upload" in info:
             s["upload"] = info["upload"]
         if "download" in info:
@@ -313,12 +662,176 @@ def refresh_sub(sid: str) -> dict[str, Any]:
     raise ValueError("订阅不存在")
 
 
+# ---------- 节点延迟(TCP 直连,不走 mihomo) ----------
+# 走 mihomo 测延迟意味着每测一个节点就要 spawn 一个子进程,32 节点 32 个进程,
+# 太重;UI 也会因为 spawn 阻塞而"无加载感"。这里改用纯 TCP connect 到节点
+# server:port,毫秒级、并发友好,而且 mihomo 没装也能测。
+# 缺点:测的是"能连上节点的入口端口",不等于代理真能跑;但作为"节点是否还活
+# 着 + 哪个 latency 最低"的指标足够,真要端到端验证再走 mihomo。
+
+def _node_endpoint(node_dict: dict[str, Any]) -> tuple[str, int] | None:
+    """从节点 dict 提 (server, port)。"""
+    server = str(node_dict.get("server") or "").strip()
+    try:
+        port = int(node_dict.get("port") or 0)
+    except (ValueError, TypeError):
+        return None
+    if not server or port <= 0 or port > 65535:
+        return None
+    return server, port
+
+
+def tcp_latency(server: str, port: int, timeout: float = 4.0) -> int | None:
+    """到 server:port 连一发 TCP,返回毫秒;失败返 None。"""
+    import socket
+    import time as _t
+    t0 = _t.perf_counter()
+    try:
+        with socket.create_connection((server, port), timeout=timeout):
+            return int((_t.perf_counter() - t0) * 1000)
+    except (OSError, socket.gaierror, socket.timeout):
+        return None
+
+
+def test_sub_node(sid: str, node_name: str,
+                  timeout: float = 4.0) -> dict[str, Any]:
+    """测单个节点 TCP 延迟。{ok, ms?, error?, server?, port?}"""
+    s = get_sub_internal(sid)
+    if not s:
+        return {"ok": False, "error": "订阅不存在"}
+    # 在 yaml 里找 dict
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(s.get("yaml_content", "") or "")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"YAML 解析失败: {e}"[:200]}
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "订阅 YAML 不是 dict"}
+    proxies = data.get("proxies") or data.get("Proxy") or []
+    target = None
+    for p in proxies:
+        if isinstance(p, dict) and str(p.get("name", "")).strip() == node_name:
+            target = p
+            break
+    if not target:
+        return {"ok": False, "error": f"未找到节点 '{node_name}'"}
+    ep = _node_endpoint(target)
+    if not ep:
+        return {"ok": False, "error": "节点没 server/port"}
+    server, port = ep
+    ms = tcp_latency(server, port, timeout)
+    if ms is None:
+        return {"ok": False, "server": server, "port": port,
+                "error": f"TCP 连不上 {server}:{port}"}
+    return {"ok": True, "ms": ms, "server": server, "port": port,
+            "node": node_name}
+
+
+def test_sub_all(sid: str, timeout: float = 4.0,
+                  max_concurrency: int = 16) -> list[dict[str, Any]]:
+    """并发测全部节点,返回 [{node, ok, ms?, server?, port?, error?}, ...]。"""
+    import concurrent.futures as _cf
+    s = get_sub_internal(sid)
+    if not s:
+        raise ValueError("订阅不存在")
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(s.get("yaml_content", "") or "")
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"YAML 解析失败: {e}") from e
+    proxies = (data or {}).get("proxies") or (data or {}).get("Proxy") or []
+    targets: list[tuple[str, tuple[str, int]]] = []
+    for p in proxies:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name", "")).strip()
+        ep = _node_endpoint(p)
+        if name and ep:
+            targets.append((name, ep))
+
+    def _do(item: tuple[str, tuple[str, int]]) -> dict[str, Any]:
+        name, (server, port) = item
+        ms = tcp_latency(server, port, timeout)
+        if ms is None:
+            return {"node": name, "ok": False, "server": server,
+                    "port": port, "error": "TCP 失败"}
+        return {"node": name, "ok": True, "ms": ms, "server": server,
+                "port": port}
+
+    results: list[dict[str, Any]] = []
+    with _cf.ThreadPoolExecutor(max_workers=max_concurrency) as pool:
+        for r in pool.map(_do, targets):
+            results.append(r)
+    return results
+
+
 def get_sub_internal(sid: str) -> dict[str, Any] | None:
     """供 P4 mihomo 集成读取完整 yaml + nodes。"""
     for s in _load():
         if s["id"] == sid:
             return s
     return None
+
+
+def update_sub(sid: str, *, name: str | None = None,
+               url: str | None = None,
+               yaml_content: str | None = None,
+               refetch: bool = False) -> dict[str, Any]:
+    """编辑现有订阅。name / url / yaml_content 任意子集可改;
+    URL 改了 (或 refetch=True) 就重新拉一次,并按需 URI→YAML 转换。"""
+    items = _load()
+    for s in items:
+        if s["id"] != sid:
+            continue
+        if name is not None:
+            s["name"] = name.strip() or s.get("name") or "未命名订阅"
+        # URL 改 / yaml 改 / 强制 refetch
+        new_url = url.strip() if isinstance(url, str) else None
+        url_changed = new_url is not None and new_url != (s.get("url") or "")
+        if isinstance(yaml_content, str) and yaml_content.strip():
+            # 直接给 yaml 文本 → 切到 yaml 源
+            text, converted = maybe_convert(yaml_content)
+            if not _parse_yaml_nodes(text):
+                # 转完仍提不出节点,基本就是无效内容
+                raise ValueError("YAML 内容无法识别为有效订阅")
+            s["source"] = "yaml"
+            s["url"] = None
+            s["yaml_content"] = text
+            s["converted_from_uri"] = converted
+            s["updated"] = int(time.time())
+            s["nodes"] = _parse_yaml_nodes(text)
+        elif new_url is not None and new_url:
+            # 新 URL → 切到 url 源,立刻拉取
+            try:
+                text, info = _fetch_url(new_url)
+            except (httpx.HTTPError, ValueError, RuntimeError) as e:
+                raise ValueError(f"拉取订阅失败:{e}") from e
+            text, converted = maybe_convert(text)
+            s["source"] = "url"
+            s["url"] = new_url
+            s["yaml_content"] = text
+            s["converted_from_uri"] = converted
+            s["updated"] = int(time.time())
+            s["nodes"] = _parse_yaml_nodes(text)
+            for k in ("upload", "download", "total", "expire"):
+                if k in info:
+                    s[k] = info[k]
+        elif refetch and s.get("source") == "url" and s.get("url"):
+            try:
+                text, info = _fetch_url(s["url"])
+            except (httpx.HTTPError, ValueError, RuntimeError) as e:
+                raise ValueError(f"刷新失败:{e}") from e
+            text, converted = maybe_convert(text)
+            s["yaml_content"] = text
+            s["converted_from_uri"] = converted
+            s["updated"] = int(time.time())
+            s["nodes"] = _parse_yaml_nodes(text)
+            for k in ("upload", "download", "total", "expire"):
+                if k in info:
+                    s[k] = info[k]
+        _save(items)
+        return _public(s)
+    raise ValueError("订阅不存在")
 
 
 def update_rules(sid: str,

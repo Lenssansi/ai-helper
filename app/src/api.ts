@@ -23,6 +23,8 @@ export interface Preset {
   label: string;
   model: string;
   extra_body: Record<string, unknown>;
+  pinned?: boolean;
+  description?: string;
 }
 
 export interface ProviderInfo {
@@ -125,6 +127,15 @@ export const upsertProvider = (patch: Partial<ProviderInfo> & {
 }) => sendJSON<ProviderInfo>("/api/providers", "POST", patch);
 export const deleteProvider = (id: string) =>
   sendJSON<{ ok: boolean }>(`/api/providers/${id}`, "DELETE");
+export const togglePresetPin = (
+  provider_id: string,
+  label: string,
+  pinned: boolean,
+) =>
+  sendJSON<ProviderInfo>(`/api/providers/${provider_id}/pin`, "POST", {
+    label,
+    pinned,
+  });
 export const setActive = (provider_id: string, preset_label: string) =>
   sendJSON<ActiveSel>("/api/active", "POST", { provider_id, preset_label });
 
@@ -156,14 +167,26 @@ export const testProvider = (provider_id: string, preset_label: string) =>
     preset_label,
   });
 
+export interface DiscoverResp {
+  models: string[];
+  errors?: string[];
+  via_vpn?: boolean;
+}
 export const discoverProviderModels = (
   base_url: string,
-  opts?: { api_key?: string; provider_id?: string },
+  opts?: {
+    api_key?: string;
+    provider_id?: string;
+    vpn_sub_id?: string;
+    vpn_node?: string;
+  },
 ) =>
-  sendJSON<{ models: string[] }>("/api/providers/discover", "POST", {
+  sendJSON<DiscoverResp>("/api/providers/discover", "POST", {
     base_url,
     api_key: opts?.api_key || null,
     provider_id: opts?.provider_id || null,
+    vpn_sub_id: opts?.vpn_sub_id || null,
+    vpn_node: opts?.vpn_node || null,
   });
 
 export interface LogsResp {
@@ -209,6 +232,8 @@ export interface VpnSub {
   total?: number;
   nodes?: string[];
   rules?: VpnRule[];
+  /** 后端拿到的是 V2Ray URI / base64,自动转过 Clash YAML */
+  converted_from_uri?: boolean;
 }
 export const listVpnSubs = () => getJSON<VpnSub[]>("/api/vpn/subs");
 export const addVpnSub = (p: {
@@ -220,13 +245,22 @@ export const deleteVpnSub = (id: string) =>
   sendJSON<{ ok: boolean }>(`/api/vpn/subs/${id}`, "DELETE");
 export const refreshVpnSub = (id: string) =>
   sendJSON<VpnSub>(`/api/vpn/subs/${id}/refresh`, "POST");
+export const updateVpnSub = (
+  id: string,
+  p: {
+    name?: string | null;
+    url?: string | null;
+    yaml?: string | null;
+    refetch?: boolean;
+  },
+) => sendJSON<VpnSub>(`/api/vpn/subs/${id}`, "PATCH", p);
 export const setVpnRules = (id: string, rules: VpnRule[]) =>
   sendJSON<VpnSub>(`/api/vpn/subs/${id}/rules`, "POST", { rules });
 
 export interface VpnPreview {
   id: string;
   name: string;
-  format: "clash-yaml" | "v2ray-uri" | "base64" | "unknown" | "empty";
+  format: "clash-yaml" | "v2ray-uri" | "base64" | "surge" | "unknown" | "empty";
   nodes: string[];
   raw_head: string;
   raw_len: number;
@@ -238,6 +272,8 @@ export interface NodeTestResult {
   ok: boolean;
   ms?: number;
   node?: string;
+  server?: string;
+  port?: number;
   error?: string;
 }
 export const testProviderNode = (
@@ -250,6 +286,44 @@ export const testProviderNode = (
     node,
     target: target || null,
   });
+
+export interface BatchNodeTestResult {
+  results: NodeTestResult[];
+  count: number;
+  alive: number;
+}
+/** 订阅级:并发 TCP 测全部节点,不写回 provider。 */
+export const testVpnSubAll = (sub_id: string) =>
+  sendJSON<BatchNodeTestResult>(
+    `/api/vpn/subs/${sub_id}/test-all`,
+    "POST",
+  );
+/** 订阅级:单节点 TCP 测延迟(ApiPage 草稿态用,不依赖 provider 保存)。 */
+export const testVpnSubNode = (sub_id: string, node: string) =>
+  sendJSON<NodeTestResult>(`/api/vpn/subs/${sub_id}/test-node`, "POST", {
+    node,
+  });
+/** provider 候选节点全测,结果写回 provider.vpn_node_latency。 */
+export const testProviderNodesAll = (provider_id: string) =>
+  sendJSON<BatchNodeTestResult>(
+    `/api/providers/${provider_id}/test-nodes-all`,
+    "POST",
+  );
+
+export interface BalanceResult {
+  ok: boolean;
+  supported: boolean;
+  total?: number;
+  used?: number;
+  remaining?: number;
+  currency?: string;
+  unit?: string;
+  error?: string;
+  via_vpn?: boolean;
+  provider_id?: string;
+}
+export const getProviderBalance = (provider_id: string) =>
+  getJSON<BalanceResult>(`/api/providers/${provider_id}/balance`);
 
 export interface ProxyInfo {
   enabled: boolean;

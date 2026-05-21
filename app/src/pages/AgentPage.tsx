@@ -7,7 +7,6 @@ import {
   gitInitWorkspace,
   listAgentSessions,
   saveWorkspace,
-  setActive,
   streamSSE,
   type AgentEvent,
   type ProvidersState,
@@ -16,6 +15,7 @@ import {
   type WorkspaceCfg,
 } from "../api";
 import Markdown from "../components/Markdown";
+import ModelSwitcher from "../components/ModelSwitcher";
 
 type Status = "idle" | "running" | "awaiting" | "done" | "error";
 
@@ -92,19 +92,8 @@ export default function AgentPage({
 
   const activeProv =
     ps?.providers.find((p) => p.id === ps.active.provider_id) || null;
+  void activeProv;
 
-  async function pickProvider(pid: string) {
-    if (!ps) return;
-    const prov = ps.providers.find((p) => p.id === pid);
-    const label = prov?.presets[0]?.label ?? "";
-    await setActive(pid, label);
-    setPs({ ...ps, active: { provider_id: pid, preset_label: label } });
-  }
-  async function pickPreset(label: string) {
-    if (!ps) return;
-    await setActive(ps.active.provider_id, label);
-    setPs({ ...ps, active: { ...ps.active, preset_label: label } });
-  }
   async function pickCwd(dir: string) {
     setWs(await saveWorkspace({ cwd: dir }));
     // 该目录有历史会话→跳到最近一个;没有→新会话(父级状态驱动)
@@ -230,32 +219,14 @@ export default function AgentPage({
               初始化 git
             </button>
           )}
-          {ps && (
-            <>
-              <select
-                title="API"
-                value={ps.active.provider_id}
-                onChange={(e) => pickProvider(e.target.value)}
-              >
-                {ps.providers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-              <select
-                title="模型/预设"
-                value={ps.active.preset_label}
-                onChange={(e) => pickPreset(e.target.value)}
-              >
-                {(activeProv?.presets ?? []).map((pr) => (
-                  <option key={pr.label} value={pr.label}>
-                    {pr.label}
-                  </option>
-                ))}
-              </select>
-            </>
-          )}
+          <ModelSwitcher
+            ps={ps}
+            compact
+            onChange={async () => {
+              const fresh = await getProviders();
+              setPs(fresh);
+            }}
+          />
           <button
             className={"cfg-toggle" + (webOn ? " on" : "")}
             onClick={() => setWebOn((v) => !v)}

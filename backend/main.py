@@ -166,6 +166,8 @@ class PresetModel(BaseModel):
     label: str
     model: str
     extra_body: dict = Field(default_factory=dict)
+    pinned: bool = False  # provider 内置顶,排前面 + 自动路由仅用置顶
+    description: str = ""  # 该预设的用途说明(用户输入)
 
 
 class ProviderPatch(BaseModel):
@@ -176,6 +178,13 @@ class ProviderPatch(BaseModel):
     api_key: str | None = None  # 留空=不改，保留原 key
     capability: str | None = None  # 擅长描述，供本地模型路由
     presets: list[PresetModel] | None = None
+    # VPN 字段 —— 之前漏在 schema 里,Pydantic 默认丢弃未声明字段,
+    # 导致前端发的 use_vpn / vpn_sub_id 永远不落库,编辑→保存→再开就全空
+    use_vpn: bool | None = None
+    vpn_sub_id: str | None = None
+    vpn_node: str | None = None
+    vpn_nodes: list[str] | None = None
+    vpn_node_latency: dict[str, int | None] | None = None
 
 
 class ActivePatch(BaseModel):
@@ -192,6 +201,9 @@ class ProviderDiscoverReq(BaseModel):
     base_url: str
     api_key: str | None = None  # Gemini/OpenAI 这类需要 Bearer 才返模型列表
     provider_id: str | None = None  # 给则走该 provider 的 VPN(若开启)
+    # 草稿态用 —— 直传 sub_id + node,不依赖 provider 已保存
+    vpn_sub_id: str | None = None
+    vpn_node: str | None = None
 
 
 class ThemePatch(BaseModel):
@@ -299,6 +311,31 @@ def write_provider(
     return upsert_provider(patch.model_dump(exclude_none=True))
 
 
+class PresetPinPatch(BaseModel):
+    label: str
+    pinned: bool
+
+
+@app.post("/api/providers/{pid}/pin")
+def toggle_preset_pin(
+    pid: str,
+    body: PresetPinPatch,
+    caller: Caller = Depends(require_permission("api_manage")),  # noqa: ARG001
+) -> dict:
+    """翻转某 provider 某 preset 的 pinned 标志。供下拉里的 ★ 用。"""
+    from config import _find, load_settings, mask_provider, save_settings
+    s = load_settings()
+    prov = _find(s["providers"], pid)
+    if not prov:
+        raise HTTPException(status_code=404, detail="provider 不存在")
+    for pr in prov.get("presets", []):
+        if pr.get("label") == body.label:
+            pr["pinned"] = bool(body.pinned)
+            save_settings(s)
+            return mask_provider(prov)
+    raise HTTPException(status_code=404, detail=f"preset '{body.label}' 不存在")
+
+
 @app.delete("/api/providers/{pid}")
 def remove_provider(
     pid: str,
@@ -322,23 +359,50 @@ def discover_provider_models(
     caller: Caller = Depends(get_caller),  # noqa: ARG001
 ) -> dict:
     """给前端「自动发现模型」按钮:探测 base_url 的可用模型列表。
-    若给了 provider_id 且该 provider 已开 VPN,通过其 VPN 子代理探测。"""
+    走 VPN 的优先级:
+      ① req.vpn_sub_id + req.vpn_node(草稿态直传,不需 provider 已保存)
+      ② provider_id 已保存且开了 VPN → 用其 vpn_sub_id + 活跃/候选节点
+    其余情况直连。"""
     from config import _find, discover_models, load_settings
 
     proxy: str | None = None
-    if req.provider_id:
+    sub_id: str | None = None
+    node: str | None = None
+    if req.vpn_sub_id:
+        sub_id = req.vpn_sub_id
+        node = req.vpn_node
+        if not node:
+            # 没指定节点 → 用订阅里最快/第一个可用节点
+            import vpn_store
+            try:
+                results = vpn_store.test_sub_all(sub_id, timeout=3.0)
+                alive = [r for r in results if r.get("ok")]
+                alive.sort(key=lambda r: r.get("ms") or 99999)
+                if alive:
+                    node = alive[0]["node"]
+            except Exception:  # noqa: BLE001
+                pass
+    elif req.provider_id:
         s = load_settings()
         prov = _find(s["providers"], req.provider_id)
         if prov and prov.get("use_vpn") and prov.get("vpn_sub_id") and (
             prov.get("vpn_node") or (prov.get("vpn_nodes") or [])
         ):
-            import vpn
+            sub_id = prov["vpn_sub_id"]
             node = (prov.get("vpn_node")
-                     or (prov.get("vpn_nodes") or [None])[0])
-            url, _err = vpn.ensure_proxy(prov["vpn_sub_id"], node)
-            if url:
-                proxy = url
-    return {"models": discover_models(req.base_url, req.api_key, proxy)}
+                    or (prov.get("vpn_nodes") or [None])[0])
+    if sub_id and node:
+        import vpn
+        url, _err = vpn.ensure_proxy(sub_id, node)
+        if url:
+            proxy = url
+    result = discover_models(req.base_url, req.api_key, proxy)
+    # 兼容:result 现在是 {models, errors};旧版只返 list
+    if isinstance(result, dict):
+        return {"models": result.get("models", []),
+                "errors": result.get("errors", []),
+                "via_vpn": bool(proxy)}
+    return {"models": result, "errors": [], "via_vpn": bool(proxy)}
 
 
 @app.post("/api/providers/test")
@@ -421,6 +485,13 @@ class VpnSubAdd(BaseModel):
     yaml: str | None = None
 
 
+class VpnSubPatch(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    yaml: str | None = None
+    refetch: bool = False
+
+
 class VpnRule(BaseModel):
     pattern: str
     node: str
@@ -466,6 +537,27 @@ def vpn_delete(
     _local_only(caller)
     import vpn_store
     return {"ok": vpn_store.delete_sub(sid)}
+
+
+@app.patch("/api/vpn/subs/{sid}")
+def vpn_update(
+    sid: str,
+    body: VpnSubPatch,
+    caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
+) -> dict:
+    """编辑订阅:改名 / 改 URL / 替换 YAML / 强制刷新。"""
+    _local_only(caller)
+    import vpn_store
+    try:
+        return vpn_store.update_sub(
+            sid,
+            name=body.name,
+            url=body.url,
+            yaml_content=body.yaml,
+            refetch=body.refetch,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/vpn/subs/{sid}/refresh")
@@ -525,10 +617,8 @@ async def test_provider_node(
     req: NodeTestReq,
     caller: Caller = Depends(require_permission("api_switch")),  # noqa: ARG001
 ) -> dict:
-    """通过指定 provider 的 VPN 子代理实测节点延迟。
-    target 默认用 provider 自身的 base_url(HEAD 请求)。"""
-    import time
-
+    """测 provider 候选节点的延迟,默认走轻量 TCP(不依赖 mihomo)。
+    req.target 给了就走重的:启 mihomo + HEAD 该 URL,验证整条代理链。"""
     from config import (
         _find,
         load_settings,
@@ -545,35 +635,138 @@ async def test_provider_node(
     if not req.node.strip():
         return {"ok": False, "error": "缺少节点名"}
 
-    target = (req.target or prov.get("base_url", "")).strip()
-    if not target:
-        return {"ok": False, "error": "缺少测试目标 URL"}
+    # 默认:TCP 直连,不依赖 mihomo
+    if not req.target:
+        import vpn_store
+        result = vpn_store.test_sub_node(sub_id, req.node)
+        set_provider_node_latency(req.provider_id, req.node,
+                                  result.get("ms") if result.get("ok") else None)
+        return result
+
+    # target 显式给了 → 走 mihomo 端到端验证
+    import time
+    target = req.target.strip()
     if not target.lower().startswith(("http://", "https://")):
         target = "https://" + target
-
     import vpn
-
     url, err = vpn.ensure_proxy(sub_id, req.node)
     if not url:
         return {"ok": False, "error": err}
-
     import httpx
-
     t0 = time.perf_counter()
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, connect=6.0),
-            proxy=url,  # httpx 0.28+ 用单数 proxy
-            follow_redirects=False,
+            proxy=url, follow_redirects=False,
         ) as c:
             r = await c.head(target)
-            _ = r.status_code  # 拿到响应即视为通
+            _ = r.status_code
     except httpx.RequestError as e:
         set_provider_node_latency(req.provider_id, req.node, None)
         return {"ok": False, "error": f"连接失败: {e}"[:200]}
     ms = int((time.perf_counter() - t0) * 1000)
     set_provider_node_latency(req.provider_id, req.node, ms)
     return {"ok": True, "ms": ms, "node": req.node}
+
+
+@app.post("/api/vpn/subs/{sid}/test-all")
+def vpn_test_all(
+    sid: str,
+    caller: Caller = Depends(get_caller),  # noqa: ARG001
+) -> dict:
+    """订阅级:并发 TCP 测全部节点,返回结果列表(不写回 provider)。"""
+    import vpn_store
+    try:
+        results = vpn_store.test_sub_all(sid)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"results": results, "count": len(results),
+            "alive": sum(1 for r in results if r.get("ok"))}
+
+
+class VpnSubNodeTest(BaseModel):
+    node: str
+
+
+@app.get("/api/providers/{pid}/balance")
+def provider_balance(
+    pid: str,
+    caller: Caller = Depends(get_caller),  # noqa: ARG001
+) -> dict:
+    """查 provider 余量。已知支持:DeepSeek / OpenRouter / Moonshot /
+    SiliconFlow。不支持的 host 返 {supported: False}。
+    走该 provider 的 VPN(若开启)。"""
+    from config import _find, load_settings
+    import balance as _bal
+    s = load_settings()
+    prov = _find(s["providers"], pid)
+    if not prov:
+        raise HTTPException(status_code=404, detail="provider 不存在")
+    api_key = prov.get("api_key") or ""
+    base_url = prov.get("base_url") or ""
+    proxy: str | None = None
+    if prov.get("use_vpn") and prov.get("vpn_sub_id") and (
+        prov.get("vpn_node") or (prov.get("vpn_nodes") or [])
+    ):
+        import vpn
+        node = (prov.get("vpn_node")
+                or (prov.get("vpn_nodes") or [None])[0])
+        url, _err = vpn.ensure_proxy(prov["vpn_sub_id"], node)
+        if url:
+            proxy = url
+    out = _bal.query_balance(base_url, api_key, proxy)
+    out["provider_id"] = pid
+    out["via_vpn"] = bool(proxy)
+    return out
+
+
+@app.post("/api/vpn/subs/{sid}/test-node")
+def vpn_test_node(
+    sid: str,
+    body: VpnSubNodeTest,
+    caller: Caller = Depends(get_caller),  # noqa: ARG001
+) -> dict:
+    """订阅级:测单个节点 TCP 延迟。不需要 provider 已保存或绑订阅,
+    ApiPage 在草稿状态下也能用 draft.vpn_sub_id 触发。"""
+    import vpn_store
+    return vpn_store.test_sub_node(sid, body.node)
+
+
+@app.post("/api/providers/{pid}/test-nodes-all")
+def provider_test_nodes_all(
+    pid: str,
+    caller: Caller = Depends(require_permission("api_switch")),  # noqa: ARG001
+) -> dict:
+    """provider 候选节点全测(TCP),结果落到 provider.vpn_node_latency。"""
+    from config import _find, load_settings, set_provider_node_latency
+    import vpn_store
+    s = load_settings()
+    prov = _find(s["providers"], pid)
+    if not prov:
+        raise HTTPException(status_code=404, detail="provider 不存在")
+    sub_id = prov.get("vpn_sub_id", "")
+    if not sub_id:
+        raise HTTPException(status_code=400,
+                            detail="该 provider 未配置 VPN 订阅")
+    cands: list[str] = prov.get("vpn_nodes") or (
+        [prov.get("vpn_node")] if prov.get("vpn_node") else []
+    )
+    cands = [n for n in cands if n]
+    if not cands:
+        return {"results": [], "count": 0, "alive": 0}
+    # 用 sub 的全测,但只 keep 候选节点
+    try:
+        all_results = vpn_store.test_sub_all(sub_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    cand_set = set(cands)
+    filtered = [r for r in all_results if r.get("node") in cand_set]
+    # 写回 latency
+    for r in filtered:
+        set_provider_node_latency(pid, r["node"],
+                                   r.get("ms") if r.get("ok") else None)
+    return {"results": filtered, "count": len(filtered),
+            "alive": sum(1 for r in filtered if r.get("ok"))}
 
 
 @app.get("/api/git/status")

@@ -67,73 +67,39 @@ def _free_port() -> int:
     raise RuntimeError("没有空闲端口可用(7900-7999)")
 
 
-def _extract_node_block(yaml_text: str, node_name: str) -> str | None:
-    """从订阅 yaml 里精确抠出指定节点的 proxy 整块(- name: xxx ... 直到下一项)。
-    保留原缩进,丢回 mihomo 自己再解析。"""
-    lines = (yaml_text or "").splitlines()
-    out: list[str] = []
-    in_proxies = False
-    in_target = False
-    item_indent = -1
-    for line in lines:
-        s = line.rstrip()
-        stripped = s.lstrip()
-        if re.match(r"^proxies\s*:", s):
-            in_proxies = True
-            continue
-        if in_proxies and re.match(r"^[A-Za-z_][\w-]*\s*:", s) and not s.startswith(" "):
-            break
-        if not in_proxies:
-            continue
-        # 列表项 "- name: x" 或 "- {name: x, ...}"
-        if stripped.startswith("-"):
-            if in_target:
-                break  # 下一项了
-            cur_indent = len(s) - len(stripped)
-            # 找 name
-            m = re.search(r"name\s*:\s*['\"]?([^'\"]+?)['\"]?\s*(?:,|$|\})",
-                            stripped)
-            if m and m.group(1).strip() == node_name:
-                in_target = True
-                item_indent = cur_indent
-                out.append(line)
-                continue
-        elif in_target:
-            # 同一项的延续行(缩进更深)
-            cur_indent = len(s) - len(stripped)
-            if cur_indent > item_indent and stripped:
-                out.append(line)
-            elif cur_indent <= item_indent and stripped:
-                break
-            else:
-                out.append(line)  # 空行/注释
-    return "\n".join(out) if out else None
+def _extract_node_dict(yaml_text: str, node_name: str) -> dict | None:
+    """用 PyYAML 解析订阅,按 name 精确匹配返回该节点的 dict。
+    比之前的行级正则更可靠 —— inline flow `- { name: ..., type: anytls }`
+    / 引号转义 / 中文键值这些情况一锅端。"""
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(yaml_text or "")
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    proxies = data.get("proxies") or data.get("Proxy") or []
+    for p in proxies:
+        if isinstance(p, dict) and str(p.get("name", "")).strip() == node_name:
+            return p
+    return None
 
 
-def _build_config(http_port: int, node_block: str) -> str:
-    """生成最小可用的 mihomo 配置:只跑 HTTP 入站,出站全走指定节点。"""
-    # node_block 已是 "- name: xxx ..." 缩进 0 的列表项,放进 proxies: 下
-    # 为避免缩进错位,统一加 2 空格
-    indented = "\n".join(
-        "  " + ln if ln.strip() else ln for ln in node_block.splitlines()
-    )
-    cfg = f"""mixed-port: {http_port}
-mode: rule
-log-level: silent
-external-controller: ''
-proxies:
-{indented}
-rules:
-  - MATCH,PROXY_NODE
-"""
-    # 上面用 PROXY_NODE 当组名;若 node_block 的 name 不叫 PROXY_NODE 就重写 rules 指向真名
-    # 简化:取 node_block 的 name 字段替换 rules 末尾
-    m = re.search(r"name\s*:\s*['\"]?([^'\"]+?)['\"]?\s*(?:,|$|\})",
-                   node_block)
-    if m:
-        node_name = m.group(1).strip()
-        cfg = cfg.replace("MATCH,PROXY_NODE", f"MATCH,{node_name}")
-    return cfg
+def _build_config(http_port: int, node_dict: dict) -> str:
+    """生成最小可用的 mihomo 配置:仅 HTTP 入站,出站固定到指定节点。
+    用 PyYAML dump 保证缩进/转义正确,顺便补 client-fingerprint 等
+    新协议必填项(由 node_dict 自带)。"""
+    import yaml as _yaml
+    name = str(node_dict.get("name", "PROXY_NODE"))
+    cfg_obj: dict[str, Any] = {
+        "mixed-port": http_port,
+        "mode": "rule",
+        "log-level": "silent",
+        "external-controller": "",
+        "proxies": [node_dict],
+        "rules": [f"MATCH,{name}"],
+    }
+    return _yaml.dump(cfg_obj, allow_unicode=True, sort_keys=False)
 
 
 def ensure_proxy(sub_id: str, node: str) -> tuple[str | None, str]:
@@ -161,8 +127,8 @@ def ensure_proxy(sub_id: str, node: str) -> tuple[str | None, str]:
         sub = vpn_store.get_sub_internal(sub_id)
         if not sub:
             return None, f"订阅不存在:{sub_id}"
-        node_block = _extract_node_block(sub.get("yaml_content", ""), node)
-        if not node_block:
+        node_dict = _extract_node_dict(sub.get("yaml_content", ""), node)
+        if not node_dict:
             return None, f"订阅 {sub_id} 里未找到节点 '{node}'"
 
         try:
@@ -173,7 +139,7 @@ def ensure_proxy(sub_id: str, node: str) -> tuple[str | None, str]:
         work = WORK_BASE / key.replace("/", "_").replace(":", "_")
         work.mkdir(parents=True, exist_ok=True)
         cfg_path = work / "config.yaml"
-        cfg_path.write_text(_build_config(port, node_block), encoding="utf-8")
+        cfg_path.write_text(_build_config(port, node_dict), encoding="utf-8")
 
         try:
             proc = subprocess.Popen(

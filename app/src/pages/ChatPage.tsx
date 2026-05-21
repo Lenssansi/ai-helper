@@ -5,7 +5,6 @@ import {
   getProviders,
   getWorkspace,
   saveConversation,
-  setActive,
   streamChat,
   streamSSE,
   type AgentEvent,
@@ -13,6 +12,7 @@ import {
   type ProvidersState,
 } from "../api";
 import Markdown from "../components/Markdown";
+import ModelSwitcher from "../components/ModelSwitcher";
 
 // 智能路由:判断用户消息是否「明显涉及文件/目录操作」。命中=走文件工具
 // 循环(可读写本机文件,失去 token 流式);否则=走流式 streamChat(保留
@@ -115,20 +115,6 @@ export default function ChatPage({
 
   const activeProv =
     ps?.providers.find((p) => p.id === ps.active.provider_id) || null;
-
-  async function chooseProvider(pid: string) {
-    const prov = ps?.providers.find((p) => p.id === pid);
-    if (!prov || !ps) return;
-    const label = prov.presets[0]?.label ?? "";
-    await setActive(pid, label);
-    setPs({ ...ps, active: { provider_id: pid, preset_label: label } });
-  }
-
-  async function choosePreset(label: string) {
-    if (!ps) return;
-    await setActive(ps.active.provider_id, label);
-    setPs({ ...ps, active: { ...ps.active, preset_label: label } });
-  }
 
   function persistNow(msgs: ChatMsg[]) {
     const id = convIdRef.current;
@@ -387,34 +373,16 @@ export default function ChatPage({
           >
             🌐 联网{webOn ? "·开" : "·关"}
           </button>
-          {ps && ps.providers.length > 0 ? (
-            <>
-              <select
-                title="选择 API"
-                value={ps.active.provider_id}
-                onChange={(e) => chooseProvider(e.target.value)}
-              >
-                {ps.providers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                    {p.api_key_set ? "" : "（无 key）"}
-                  </option>
-                ))}
-              </select>
-              <select
-                title="模型 / 模式"
-                value={ps.active.preset_label}
-                onChange={(e) => choosePreset(e.target.value)}
-              >
-                {(activeProv?.presets ?? []).map((pr) => (
-                  <option key={pr.label} value={pr.label}>
-                    {pr.label}
-                  </option>
-                ))}
-              </select>
-            </>
-          ) : (
-            <span className="cfg-msg">去「API 管理」加一个 API →</span>
+          <ModelSwitcher
+            ps={ps}
+            compact
+            onChange={async () => {
+              const fresh = await getProviders();
+              setPs(fresh);
+            }}
+          />
+          {activeProv && !activeProv.api_key_set && (
+            <span className="cfg-msg">（当前 API 无 key）</span>
           )}
         </div>
       </div>
