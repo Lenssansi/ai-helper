@@ -404,6 +404,22 @@ class VpnSubAdd(BaseModel):
     yaml: str | None = None
 
 
+class VpnRule(BaseModel):
+    pattern: str
+    node: str
+    note: str | None = ""
+
+
+class VpnRulesPatch(BaseModel):
+    rules: list[VpnRule]
+
+
+class NodeTestReq(BaseModel):
+    provider_id: str
+    node: str
+    target: str | None = None  # 留空=用 provider 自身 base_url
+
+
 # ---------- VPN 订阅 ----------
 
 @app.get("/api/vpn/subs")
@@ -446,6 +462,79 @@ def vpn_refresh(
         return vpn_store.refresh_sub(sid)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/vpn/subs/{sid}/rules")
+def vpn_set_rules(
+    sid: str,
+    body: VpnRulesPatch,
+    caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
+) -> dict:
+    _local_only(caller)
+    import vpn_store
+    try:
+        return vpn_store.update_rules(
+            sid, [r.model_dump() for r in body.rules]
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/providers/test-node")
+async def test_provider_node(
+    req: NodeTestReq,
+    caller: Caller = Depends(require_permission("api_switch")),  # noqa: ARG001
+) -> dict:
+    """通过指定 provider 的 VPN 子代理实测节点延迟。
+    target 默认用 provider 自身的 base_url(HEAD 请求)。"""
+    import time
+
+    from config import (
+        _find,
+        load_settings,
+        set_provider_node_latency,
+    )
+
+    s = load_settings()
+    prov = _find(s["providers"], req.provider_id)
+    if not prov:
+        return {"ok": False, "error": "provider 不存在"}
+    sub_id = prov.get("vpn_sub_id", "")
+    if not sub_id:
+        return {"ok": False, "error": "该 provider 未配置 VPN 订阅"}
+    if not req.node.strip():
+        return {"ok": False, "error": "缺少节点名"}
+
+    target = (req.target or prov.get("base_url", "")).strip()
+    if not target:
+        return {"ok": False, "error": "缺少测试目标 URL"}
+    if not target.lower().startswith(("http://", "https://")):
+        target = "https://" + target
+
+    import vpn
+
+    url, err = vpn.ensure_proxy(sub_id, req.node)
+    if not url:
+        return {"ok": False, "error": err}
+
+    import httpx
+
+    proxies = {"http://": url, "https://": url}
+    t0 = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=6.0),
+            proxies=proxies,
+            follow_redirects=False,
+        ) as c:
+            r = await c.head(target)
+            _ = r.status_code  # 拿到响应即视为通
+    except httpx.RequestError as e:
+        set_provider_node_latency(req.provider_id, req.node, None)
+        return {"ok": False, "error": f"连接失败: {e}"[:200]}
+    ms = int((time.perf_counter() - t0) * 1000)
+    set_provider_node_latency(req.provider_id, req.node, ms)
+    return {"ok": True, "ms": ms, "node": req.node}
 
 
 @app.get("/api/git/status")

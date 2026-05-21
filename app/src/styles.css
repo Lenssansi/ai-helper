@@ -298,6 +298,116 @@ body {
   gap: 10px;
   flex-wrap: wrap;
 }
+/* API 编辑 / VPN 节点多选行 */
+.node-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0;
+}
+.node-row {
+  display: grid;
+  grid-template-columns: 1fr 88px auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-2);
+  border-radius: 7px;
+  background: var(--panel-2);
+  font-size: 13px;
+}
+.node-check {
+  display: flex !important;
+  flex-direction: row !important;
+  gap: 8px;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+  cursor: pointer;
+}
+.node-check input {
+  background: revert;
+  color: revert;
+  border: revert;
+  padding: revert;
+  width: auto;
+}
+.node-lat {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  text-align: right;
+  color: var(--muted);
+}
+.node-lat.good {
+  color: var(--ok, #2da44e);
+  font-weight: 600;
+}
+.node-lat.ok {
+  color: var(--text);
+}
+.node-lat.bad {
+  color: var(--err);
+}
+.node-row button {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.node-row button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.node-active {
+  display: flex !important;
+  flex-direction: row !important;
+  gap: 4px;
+  align-items: center;
+  cursor: pointer;
+  font-size: 12px;
+}
+.node-active.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.node-active input {
+  background: revert;
+  color: revert;
+  border: revert;
+  padding: revert;
+  width: auto;
+}
+
+/* VPN 订阅规则编辑 */
+.vpn-rules {
+  margin-top: 10px;
+  padding: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: 7px;
+}
+.vpn-rule-row {
+  display: grid;
+  grid-template-columns: 2fr 1.5fr 1.5fr auto;
+  gap: 6px;
+  margin: 4px 0;
+  align-items: center;
+}
+.vpn-rule-row input,
+.vpn-rule-row select {
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.vpn-rule-row button {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
 /* 编程 Agent 的左右双栏:消息 + 右侧 TODO 面板 */
 .agent-body {
   flex: 1;

@@ -35,7 +35,9 @@ export interface ProviderInfo {
   presets: Preset[];
   use_vpn?: boolean;
   vpn_sub_id?: string;
-  vpn_node?: string;
+  vpn_node?: string; // 活跃节点(用户手动选;runtime 用它)
+  vpn_nodes?: string[]; // 候选节点列表
+  vpn_node_latency?: Record<string, number | null>;
 }
 
 export interface ActiveSel {
@@ -185,6 +187,11 @@ export const installGit = (url: string, install_dir: string) =>
     installer_log_tail?: string;
   }>("/api/git/install", "POST", { url, install_dir });
 
+export interface VpnRule {
+  pattern: string;
+  node: string;
+  note?: string;
+}
 export interface VpnSub {
   id: string;
   name: string;
@@ -196,6 +203,7 @@ export interface VpnSub {
   download?: number;
   total?: number;
   nodes?: string[];
+  rules?: VpnRule[];
 }
 export const listVpnSubs = () => getJSON<VpnSub[]>("/api/vpn/subs");
 export const addVpnSub = (p: {
@@ -207,6 +215,25 @@ export const deleteVpnSub = (id: string) =>
   sendJSON<{ ok: boolean }>(`/api/vpn/subs/${id}`, "DELETE");
 export const refreshVpnSub = (id: string) =>
   sendJSON<VpnSub>(`/api/vpn/subs/${id}/refresh`, "POST");
+export const setVpnRules = (id: string, rules: VpnRule[]) =>
+  sendJSON<VpnSub>(`/api/vpn/subs/${id}/rules`, "POST", { rules });
+
+export interface NodeTestResult {
+  ok: boolean;
+  ms?: number;
+  node?: string;
+  error?: string;
+}
+export const testProviderNode = (
+  provider_id: string,
+  node: string,
+  target?: string,
+) =>
+  sendJSON<NodeTestResult>("/api/providers/test-node", "POST", {
+    provider_id,
+    node,
+    target: target || null,
+  });
 
 export interface ProxyInfo {
   enabled: boolean;

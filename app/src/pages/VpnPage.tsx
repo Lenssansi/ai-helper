@@ -1,11 +1,13 @@
 // VPN 订阅 / 节点管理页 —— 框架,具体接口/列表后续填充
 import { useEffect, useState } from "react";
 import {
+  type VpnRule,
   type VpnSub,
   listVpnSubs,
   addVpnSub,
   deleteVpnSub,
   refreshVpnSub,
+  setVpnRules,
 } from "../api";
 
 export default function VpnPage() {
@@ -148,6 +150,16 @@ export default function VpnPage() {
                     {s.nodes.length > 3 ? " · …" : ""})
                   </div>
                 )}
+                <RulesEditor
+                  sub={s}
+                  onSaved={(updated) => {
+                    setList((prev) =>
+                      (prev || []).map((x) =>
+                        x.id === updated.id ? updated : x,
+                      ),
+                    );
+                  }}
+                />
               </div>
               <div className="prov-actions">
                 {s.url && (
@@ -198,4 +210,91 @@ function fmtBytes(b: number | null | undefined): string {
     i += 1;
   }
   return v.toFixed(v < 10 ? 2 : v < 100 ? 1 : 0) + " " + u[i];
+}
+
+function RulesEditor({
+  sub,
+  onSaved,
+}: {
+  sub: VpnSub;
+  onSaved: (updated: VpnSub) => void;
+}) {
+  const [rules, setRules] = useState<VpnRule[]>(sub.rules || []);
+  const [dirty, setDirty] = useState(false);
+  const [msg, setMsg] = useState("");
+  // 当父级订阅刷新时同步进来
+  useEffect(() => {
+    setRules(sub.rules || []);
+    setDirty(false);
+  }, [sub.id, JSON.stringify(sub.rules)]);
+
+  const nodes = sub.nodes || [];
+  function patch(i: number, p: Partial<VpnRule>) {
+    setRules((rs) => rs.map((r, j) => (i === j ? { ...r, ...p } : r)));
+    setDirty(true);
+  }
+  function add() {
+    setRules((rs) => [
+      ...rs,
+      { pattern: "", node: nodes[0] || "", note: "" },
+    ]);
+    setDirty(true);
+  }
+  function del(i: number) {
+    setRules((rs) => rs.filter((_, j) => i !== j));
+    setDirty(true);
+  }
+  async function save() {
+    setMsg("保存中…");
+    try {
+      const updated = await setVpnRules(sub.id, rules);
+      onSaved(updated);
+      setDirty(false);
+      setMsg("已保存");
+    } catch (e) {
+      setMsg((e as Error).message);
+    }
+  }
+  return (
+    <div className="vpn-rules">
+      <div className="set-title" style={{ fontSize: 13, marginBottom: 4 }}>
+        规则(可选,定义"什么走哪个节点";暂只存数据,不自动切节点)
+      </div>
+      {rules.map((r, i) => (
+        <div key={i} className="vpn-rule-row">
+          <input
+            value={r.pattern}
+            placeholder="匹配模式(如域名 api.openai.com)"
+            onChange={(e) => patch(i, { pattern: e.target.value })}
+          />
+          <select
+            value={r.node}
+            onChange={(e) => patch(i, { node: e.target.value })}
+          >
+            <option value="">— 节点 —</option>
+            {nodes.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          <input
+            value={r.note || ""}
+            placeholder="备注(可选)"
+            onChange={(e) => patch(i, { note: e.target.value })}
+          />
+          <button className="danger" onClick={() => del(i)}>
+            ×
+          </button>
+        </div>
+      ))}
+      <div className="cfg-actions" style={{ marginTop: 6 }}>
+        <button onClick={add}>＋ 新增规则</button>
+        <button disabled={!dirty} onClick={save}>
+          保存规则
+        </button>
+        <span className="cfg-msg">{msg}</span>
+      </div>
+    </div>
+  );
 }

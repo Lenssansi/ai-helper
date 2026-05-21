@@ -346,6 +346,8 @@ def mask_provider(p: dict[str, Any]) -> dict[str, Any]:
         "use_vpn": bool(p.get("use_vpn", False)),
         "vpn_sub_id": p.get("vpn_sub_id", ""),
         "vpn_node": p.get("vpn_node", ""),
+        "vpn_nodes": p.get("vpn_nodes", []),
+        "vpn_node_latency": p.get("vpn_node_latency", {}),
     }
 
 
@@ -533,7 +535,10 @@ def upsert_provider(patch: dict[str, Any]) -> dict[str, Any]:
     pid = patch.get("id")
     existing = _find(providers, pid) if pid else None
     # VPN 字段:可空=该字段不变;显式 false / "" 则覆盖为关闭
-    vpn_fields = ("use_vpn", "vpn_sub_id", "vpn_node")
+    vpn_fields = (
+        "use_vpn", "vpn_sub_id", "vpn_node",
+        "vpn_nodes", "vpn_node_latency",
+    )
     if existing:
         for k in ("name", "format", "base_url", "capability", "presets"):
             if k in patch and patch[k] is not None:
@@ -556,6 +561,8 @@ def upsert_provider(patch: dict[str, Any]) -> dict[str, Any]:
             "use_vpn": bool(patch.get("use_vpn", False)),
             "vpn_sub_id": patch.get("vpn_sub_id", ""),
             "vpn_node": patch.get("vpn_node", ""),
+            "vpn_nodes": patch.get("vpn_nodes", []),
+            "vpn_node_latency": patch.get("vpn_node_latency", {}),
         }
         providers.append(target)
         if not s["active"].get("provider_id"):
@@ -566,6 +573,20 @@ def upsert_provider(patch: dict[str, Any]) -> dict[str, Any]:
             }
     save_settings(s)
     return mask_provider(target)
+
+
+def set_provider_node_latency(pid: str, node: str,
+                                  ms: int | None) -> bool:
+    """更新某 provider 对某节点的最近一次延迟(ms),None=测失败。"""
+    s = load_settings()
+    prov = _find(s["providers"], pid)
+    if not prov:
+        return False
+    lat = dict(prov.get("vpn_node_latency") or {})
+    lat[node] = ms
+    prov["vpn_node_latency"] = lat
+    save_settings(s)
+    return True
 
 
 def delete_provider(pid: str) -> bool:

@@ -41,7 +41,7 @@ def _save(items: list[dict[str, Any]]) -> None:
 
 
 def _public(s: dict[str, Any]) -> dict[str, Any]:
-    """前端展示:不暴露完整 yaml,只暴露元信息 + 节点名列表。"""
+    """前端展示:不暴露完整 yaml,只暴露元信息 + 节点名列表 + 规则。"""
     return {
         "id": s["id"],
         "name": s.get("name", ""),
@@ -53,6 +53,7 @@ def _public(s: dict[str, Any]) -> dict[str, Any]:
         "download": s.get("download"),
         "total": s.get("total"),
         "nodes": s.get("nodes", []),
+        "rules": s.get("rules", []),
     }
 
 
@@ -180,3 +181,34 @@ def get_sub_internal(sid: str) -> dict[str, Any] | None:
         if s["id"] == sid:
             return s
     return None
+
+
+def update_rules(sid: str,
+                  rules: list[dict[str, Any]]) -> dict[str, Any]:
+    """覆盖式更新订阅的 rules。每条 rule:{pattern, node[, note]}。
+    runtime 暂不自动按规则切节点(按用户要求),仅持久化供未来用 + UI 展示。"""
+    items = _load()
+    for s in items:
+        if s["id"] != sid:
+            continue
+        clean: list[dict[str, Any]] = []
+        node_set = set(s.get("nodes") or [])
+        for r in rules or []:
+            if not isinstance(r, dict):
+                continue
+            pat = str(r.get("pattern") or "").strip()
+            node = str(r.get("node") or "").strip()
+            if not pat or not node:
+                continue
+            if node_set and node not in node_set:
+                # 规则指向不存在的节点 → 跳过(避免脏数据)
+                continue
+            clean.append({
+                "pattern": pat[:200],
+                "node": node[:200],
+                "note": str(r.get("note") or "")[:200],
+            })
+        s["rules"] = clean
+        _save(items)
+        return _public(s)
+    raise ValueError("订阅不存在")

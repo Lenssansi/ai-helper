@@ -8,6 +8,7 @@ import {
   resetUsage,
   setActive,
   testProvider,
+  testProviderNode,
   upsertProvider,
   type ProvidersState,
   type ProviderTest,
@@ -32,7 +33,9 @@ interface Draft {
   presets: PresetRow[];
   use_vpn: boolean;
   vpn_sub_id: string;
-  vpn_node: string;
+  vpn_node: string; // 用户当前选定的活跃节点(运行时用它)
+  vpn_nodes: string[]; // 多节点候选清单
+  vpn_node_latency: Record<string, number | null>;
 }
 
 const FORMATS = ["openai_compat", "anthropic", "gemini", "custom"];
@@ -49,6 +52,8 @@ function blankDraft(): Draft {
     use_vpn: false,
     vpn_sub_id: "",
     vpn_node: "",
+    vpn_nodes: [],
+    vpn_node_latency: {},
   };
 }
 
@@ -139,6 +144,8 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
       use_vpn: !!p.use_vpn,
       vpn_sub_id: p.vpn_sub_id || "",
       vpn_node: p.vpn_node || "",
+      vpn_nodes: p.vpn_nodes || [],
+      vpn_node_latency: p.vpn_node_latency || {},
     });
   }
 
@@ -174,6 +181,8 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
         use_vpn: draft.use_vpn,
         vpn_sub_id: draft.use_vpn ? draft.vpn_sub_id : "",
         vpn_node: draft.use_vpn ? draft.vpn_node : "",
+        vpn_nodes: draft.use_vpn ? draft.vpn_nodes : [],
+        vpn_node_latency: draft.vpn_node_latency,
       });
       setDraft(null);
       reload();
@@ -416,28 +425,137 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                   ))}
                 </select>
               </label>
-              <label>
-                节点
-                <select
-                  value={draft.vpn_node}
-                  onChange={(e) =>
-                    setDraft({ ...draft, vpn_node: e.target.value })
-                  }
-                  disabled={!draft.vpn_sub_id}
-                >
-                  <option value="">— 选节点 —</option>
-                  {(
-                    vpnSubs.find((s) => s.id === draft.vpn_sub_id)?.nodes || []
-                  ).map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="muted">
+                勾选要纳入的节点(可多选);测延迟看哪条最快;再用「●」选活跃节点(运行时实际用它,不会自动切)。
+              </div>
+              <div className="node-list">
+                {(
+                  vpnSubs.find((s) => s.id === draft.vpn_sub_id)?.nodes || []
+                ).map((n) => {
+                  const inCand = draft.vpn_nodes.includes(n);
+                  const isActive = draft.vpn_node === n;
+                  const lat = draft.vpn_node_latency[n];
+                  return (
+                    <div key={n} className="node-row">
+                      <label className="node-check">
+                        <input
+                          type="checkbox"
+                          checked={inCand}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                              ? [...draft.vpn_nodes, n]
+                              : draft.vpn_nodes.filter((x) => x !== n);
+                            setDraft({
+                              ...draft,
+                              vpn_nodes: next,
+                              // 取消勾选当前活跃 → 清空
+                              vpn_node:
+                                !e.target.checked && draft.vpn_node === n
+                                  ? ""
+                                  : draft.vpn_node,
+                            });
+                          }}
+                        />
+                        <span>{n}</span>
+                      </label>
+                      <span
+                        className={
+                          "node-lat" +
+                          (lat == null
+                            ? " unknown"
+                            : lat < 200
+                            ? " good"
+                            : lat < 500
+                            ? " ok"
+                            : " bad")
+                        }
+                      >
+                        {lat === undefined
+                          ? "—"
+                          : lat === null
+                          ? "✖ 失败"
+                          : `${lat} ms`}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={!draft.id}
+                        title={
+                          draft.id
+                            ? "通过该节点 HEAD provider base_url,实测耗时"
+                            : "请先保存 provider 再测延迟"
+                        }
+                        onClick={async () => {
+                          if (!draft.id) return;
+                          setDraft({
+                            ...draft,
+                            vpn_node_latency: {
+                              ...draft.vpn_node_latency,
+                              [n]: undefined as unknown as number,
+                            },
+                          });
+                          try {
+                            const r = await testProviderNode(draft.id, n);
+                            setDraft((d) =>
+                              d
+                                ? {
+                                    ...d,
+                                    vpn_node_latency: {
+                                      ...d.vpn_node_latency,
+                                      [n]: r.ok ? r.ms ?? 0 : null,
+                                    },
+                                  }
+                                : d,
+                            );
+                          } catch {
+                            setDraft((d) =>
+                              d
+                                ? {
+                                    ...d,
+                                    vpn_node_latency: {
+                                      ...d.vpn_node_latency,
+                                      [n]: null,
+                                    },
+                                  }
+                                : d,
+                            );
+                          }
+                        }}
+                      >
+                        测延迟
+                      </button>
+                      <label
+                        className={
+                          "node-active" + (!inCand ? " disabled" : "")
+                        }
+                        title={
+                          inCand
+                            ? "设为活跃节点(运行时实际用它)"
+                            : "需先勾选纳入候选"
+                        }
+                      >
+                        <input
+                          type="radio"
+                          name={`active-node-${draft.id || "new"}`}
+                          checked={isActive}
+                          disabled={!inCand}
+                          onChange={() =>
+                            setDraft({ ...draft, vpn_node: n })
+                          }
+                        />
+                        <span>活跃</span>
+                      </label>
+                    </div>
+                  );
+                })}
+                {!(
+                  vpnSubs.find((s) => s.id === draft.vpn_sub_id)?.nodes || []
+                ).length && (
+                  <div className="muted">(订阅没节点;先去 VPN 页刷新或换订阅)</div>
+                )}
+              </div>
               <div className="muted">
                 需要 mihomo 二进制(放 D:\ai-helper\mihomo\mihomo.exe 或加 PATH)。
-                首次调用此 API 时自动起子代理,关软件时一起停。
+                首次调用 / 测延迟时自动起子代理,关软件时一起停。
               </div>
             </>
           )}
