@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
@@ -94,6 +94,57 @@ app.add_middleware(
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "version": APP_VERSION}
+
+
+# ---------- 聚合 API 代理 /v1/* (OpenAI 兼容) ----------
+
+import proxy_v1  # noqa: E402
+
+
+@app.get("/v1/models")
+async def v1_models(request: Request) -> dict:
+    proxy_v1._check_auth(request)
+    return {"object": "list", "data": proxy_v1.list_models_data()}
+
+
+@app.post("/v1/chat/completions")
+async def v1_chat_completions(request: Request):
+    return await proxy_v1.proxy_chat_completions(request)
+
+
+@app.get("/api/proxy/info")
+def proxy_info(caller: Caller = Depends(get_caller)) -> dict:  # noqa: ARG001
+    """供设置页显示代理 base_url、key、开关状态。"""
+    from config import get_proxy_enabled, get_proxy_key
+    s = load_settings()
+    return {
+        "enabled": get_proxy_enabled(),
+        "key": get_proxy_key(),
+        "host": s.get("host", "127.0.0.1"),
+        "port": s.get("port", 8756),
+        "models_count": len(proxy_v1.list_models_data()),
+    }
+
+
+class ProxyToggle(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/proxy/toggle")
+def proxy_toggle(
+    body: ProxyToggle,
+    caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
+) -> dict:
+    from config import set_proxy_enabled
+    return {"enabled": set_proxy_enabled(body.enabled)}
+
+
+@app.post("/api/proxy/regen-key")
+def proxy_regen(
+    caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
+) -> dict:
+    from config import regenerate_proxy_key
+    return {"key": regenerate_proxy_key()}
 
 
 @app.get("/api/whoami")
@@ -340,6 +391,56 @@ def read_usage(caller: Caller = Depends(get_caller)) -> dict:  # noqa: ARG001
 class GitInstallReq(BaseModel):
     url: str
     install_dir: str = ""
+
+
+class VpnSubAdd(BaseModel):
+    name: str
+    url: str | None = None
+    yaml: str | None = None
+
+
+# ---------- VPN 订阅 ----------
+
+@app.get("/api/vpn/subs")
+def vpn_list(caller: Caller = Depends(get_caller)) -> list:  # noqa: ARG001
+    import vpn_store
+    return vpn_store.list_subs()
+
+
+@app.post("/api/vpn/subs")
+def vpn_add(
+    body: VpnSubAdd,
+    caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
+) -> dict:
+    _local_only(caller)
+    import vpn_store
+    try:
+        return vpn_store.add_sub(body.name, body.url, body.yaml)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/vpn/subs/{sid}")
+def vpn_delete(
+    sid: str,
+    caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
+) -> dict:
+    _local_only(caller)
+    import vpn_store
+    return {"ok": vpn_store.delete_sub(sid)}
+
+
+@app.post("/api/vpn/subs/{sid}/refresh")
+def vpn_refresh(
+    sid: str,
+    caller: Caller = Depends(require_permission("settings")),  # noqa: ARG001
+) -> dict:
+    _local_only(caller)
+    import vpn_store
+    try:
+        return vpn_store.refresh_sub(sid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/git/status")

@@ -3,26 +3,29 @@ import ChatPage from "./pages/ChatPage";
 import AgentPage from "./pages/AgentPage";
 import ApiPage from "./pages/ApiPage";
 import SettingsPage from "./pages/SettingsPage";
+import VpnPage from "./pages/VpnPage";
+import Sidebar, { type Page } from "./components/Sidebar";
 import {
+  deleteAgentSession,
+  deleteConversation,
   getHealth,
   getTheme,
   getWhoAmI,
+  listAgentSessions,
+  listConversations,
+  type AgentSessionSummary,
+  type ConvSummary,
   type ThemeMode,
   type WhoAmI,
 } from "./api";
 
-type Page = "chat" | "agent" | "api" | "settings";
-
-const NAV: { key: Page; label: string }[] = [
-  { key: "chat", label: "对话" },
-  { key: "agent", label: "编程" },
-  { key: "api", label: "API 管理" },
-  { key: "settings", label: "设置" },
-];
-
 declare global {
   interface Window {
-    aihelper?: { isElectron?: boolean; setNativeTheme?: (t: string) => void };
+    aihelper?: {
+      isElectron?: boolean;
+      setNativeTheme?: (t: string) => void;
+      pickFolder?: () => Promise<string>;
+    };
   }
 }
 
@@ -46,6 +49,27 @@ export default function App() {
   const [version, setVersion] = useState("");
   const [theme, setThemeState] = useState<ThemeMode>("dark");
 
+  // 历史列表(全局):Sidebar 和 Page 共用一份;Page 在持久化后通知 App 刷新
+  const [convList, setConvList] = useState<ConvSummary[]>([]);
+  const [activeConvId, setActiveConvId] = useState<string | null>(null);
+  const [sessionList, setSessionList] = useState<AgentSessionSummary[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+
+  async function refreshConvList() {
+    try {
+      setConvList(await listConversations());
+    } catch {
+      /* ignore */
+    }
+  }
+  async function refreshSessionList() {
+    try {
+      setSessionList(await listAgentSessions());
+    } catch {
+      /* ignore */
+    }
+  }
+
   useEffect(() => {
     (async () => {
       try {
@@ -56,15 +80,15 @@ export default function App() {
         const t = (await getTheme()).theme;
         setThemeState(t);
         applyTheme(t);
-        // system 主题：原生主题经 IPC 设置有延迟，稍后再算一次防首帧错配
         if (t === "system") setTimeout(() => applyTheme("system"), 80);
       } catch {
         setBackendOk(false);
       }
+      refreshConvList();
+      refreshSessionList();
     })();
   }, []);
 
-  // 跟随系统时，监听系统明暗变化实时套用
   useEffect(() => {
     if (theme !== "system") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -73,30 +97,74 @@ export default function App() {
     return () => mq.removeEventListener("change", fn);
   }, [theme]);
 
+  async function onDeleteConv(id: string) {
+    try {
+      await deleteConversation(id);
+    } catch {
+      /* ignore */
+    }
+    if (activeConvId === id) setActiveConvId(null);
+    refreshConvList();
+  }
+  async function onDeleteSession(id: string) {
+    try {
+      await deleteAgentSession(id);
+    } catch {
+      /* ignore */
+    }
+    if (activeSessionId === id) setActiveSessionId(null);
+    refreshSessionList();
+  }
+
   return (
     <div className="app">
-      <nav className="sidebar">
-        <div className="brand">
-          <span className="brand-dot" />
-          ai-helper
-        </div>
-        {NAV.map((n) => (
-          <button
-            key={n.key}
-            className={"nav-item" + (page === n.key ? " active" : "")}
-            onClick={() => setPage(n.key)}
-          >
-            {n.label}
-          </button>
-        ))}
-        <div className="sidebar-foot">
-          <StatusLine ok={backendOk} who={who} version={version} />
-        </div>
-      </nav>
+      <Sidebar
+        page={page}
+        onPage={setPage}
+        convList={convList}
+        activeConvId={activeConvId}
+        onSelectConv={(id) => {
+          setPage("chat");
+          setActiveConvId(id);
+        }}
+        onNewConv={() => {
+          setPage("chat");
+          setActiveConvId(null);
+        }}
+        onDeleteConv={onDeleteConv}
+        sessionList={sessionList}
+        activeSessionId={activeSessionId}
+        onSelectSession={(id) => {
+          setPage("agent");
+          setActiveSessionId(id);
+        }}
+        onNewSession={() => {
+          setPage("agent");
+          setActiveSessionId(null);
+        }}
+        onDeleteSession={onDeleteSession}
+        backendOk={backendOk}
+        who={who}
+        version={version}
+      />
       <main className="content">
-        {page === "chat" && <ChatPage />}
-        {page === "agent" && <AgentPage who={who} />}
+        {page === "chat" && (
+          <ChatPage
+            activeConvId={activeConvId}
+            onConvChange={setActiveConvId}
+            onListUpdate={refreshConvList}
+          />
+        )}
+        {page === "agent" && (
+          <AgentPage
+            who={who}
+            activeSessionId={activeSessionId}
+            onSessionChange={setActiveSessionId}
+            onListUpdate={refreshSessionList}
+          />
+        )}
         {page === "api" && <ApiPage who={who} />}
+        {page === "vpn" && <VpnPage />}
         {page === "settings" && (
           <SettingsPage
             who={who}
@@ -109,30 +177,5 @@ export default function App() {
         )}
       </main>
     </div>
-  );
-}
-
-function StatusLine({
-  ok,
-  who,
-  version,
-}: {
-  ok: boolean | null;
-  who: WhoAmI | null;
-  version: string;
-}) {
-  if (ok === null) return <span className="status">连接后端中…</span>;
-  if (!ok)
-    return <span className="status err">后端未连接（先跑 开发启动.bat）</span>;
-  return (
-    <span className="status ok">
-      后端已连接 v{version}
-      {who && (
-        <>
-          <br />
-          访问级别：{who.trust === "local" ? "本地（全功能）" : "远程（受限）"}
-        </>
-      )}
-    </span>
   );
 }

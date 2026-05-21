@@ -12,8 +12,12 @@ import {
   clearLogs,
   getGitStatus,
   installGit,
+  getProxyInfo,
+  toggleProxy,
+  regenProxyKey,
   type LogsResp,
   type GitStatusResp,
+  type ProxyInfo,
   githubGenDoc,
   githubPreview,
   githubSaveDoc,
@@ -130,6 +134,8 @@ export default function SettingsPage({
   const [gitDir, setGitDir] = useState("");
   const [gitMsg, setGitMsg] = useState("");
   const [installing, setInstalling] = useState(false);
+  const [proxy, setProxy] = useState<ProxyInfo | null>(null);
+  const [proxyMsg, setProxyMsg] = useState("");
 
   async function refreshOllama() {
     try {
@@ -151,6 +157,9 @@ export default function SettingsPage({
       .catch(() => void 0);
     getGitStatus()
       .then(setGitSt)
+      .catch(() => void 0);
+    getProxyInfo()
+      .then(setProxy)
       .catch(() => void 0);
     getBrain()
       .then((r) => setBrain(r.brain))
@@ -280,6 +289,96 @@ export default function SettingsPage({
           。编程 Agent 每次任务开始有 Git 检查点，可一键回滚。
         </div>
         <div className="cfg-msg">{cfMsg}</div>
+      </section>
+
+      <section className="set-block">
+        <div className="set-title">
+          本地 API 聚合代理
+          <span className={"dot " + (proxy?.enabled ? "ok" : "err")} />
+          {proxy?.enabled ? "在线" : "已关闭"}
+        </div>
+        <div className="muted">
+          把所有配置过 key 的 API 聚合成一个 OpenAI 兼容端点,其他工具
+          (Cline / Cursor / NextChat 等) 填这个地址就能用本机所有模型。
+        </div>
+        {proxy && (
+          <>
+            <label>
+              Base URL(复制给客户端)
+              <div className="preset-row">
+                <input
+                  readOnly
+                  value={`http://${proxy.host}:${proxy.port}/v1`}
+                />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(
+                      `http://${proxy.host}:${proxy.port}/v1`,
+                    );
+                    setProxyMsg("base_url 已复制");
+                  }}
+                >
+                  复制
+                </button>
+              </div>
+            </label>
+            <label>
+              API Key
+              <div className="preset-row">
+                <input readOnly value={proxy.key} />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(proxy.key);
+                    setProxyMsg("key 已复制");
+                  }}
+                >
+                  复制
+                </button>
+                <button
+                  className="danger"
+                  onClick={async () => {
+                    if (
+                      !confirm(
+                        "重置 key 后,所有已在用客户端将失效,需要重新配置。继续?",
+                      )
+                    )
+                      return;
+                    try {
+                      const r = await regenProxyKey();
+                      setProxy({ ...proxy, key: r.key });
+                      setProxyMsg("key 已重置");
+                    } catch (e) {
+                      setProxyMsg((e as Error).message);
+                    }
+                  }}
+                >
+                  重置
+                </button>
+              </div>
+            </label>
+            <div className="muted">
+              当前可用模型 {proxy.models_count} 个;关闭代理则
+              <code> /v1/* </code>
+              端点返回 503。
+            </div>
+            <div className="cfg-actions">
+              <button
+                onClick={async () => {
+                  try {
+                    const r = await toggleProxy(!proxy.enabled);
+                    setProxy({ ...proxy, enabled: r.enabled });
+                    setProxyMsg(r.enabled ? "已启用" : "已关闭");
+                  } catch (e) {
+                    setProxyMsg((e as Error).message);
+                  }
+                }}
+              >
+                {proxy.enabled ? "关闭代理" : "启用代理"}
+              </button>
+              <span className="cfg-msg">{proxyMsg}</span>
+            </div>
+          </>
+        )}
       </section>
 
       <section className="set-block">

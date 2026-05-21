@@ -1,0 +1,182 @@
+"""VPN(Clash 兼容)订阅存储 + 元数据解析。
+
+JSON 落盘 data/vpn_subs.json,每条订阅:
+{ id, name, source: "url" | "yaml", url, yaml_content,
+  updated, expire, upload, download, total, nodes:[name,...] }
+
+订阅刷新:url 模式从远端 GET,顺便解析 subscription-userinfo header(余量);
+yaml 模式只重解析 nodes。仅落数据,不启 mihomo 进程(P4 才动核心)。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from config import DATA_DIR
+
+VPN_PATH = DATA_DIR / "vpn_subs.json"
+
+
+def _load() -> list[dict[str, Any]]:
+    try:
+        return json.loads(VPN_PATH.read_text(encoding="utf-8")) or []
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+
+
+def _save(items: list[dict[str, Any]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = VPN_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(items, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+    os.replace(tmp, VPN_PATH)
+
+
+def _public(s: dict[str, Any]) -> dict[str, Any]:
+    """前端展示:不暴露完整 yaml,只暴露元信息 + 节点名列表。"""
+    return {
+        "id": s["id"],
+        "name": s.get("name", ""),
+        "source": s.get("source", "yaml"),
+        "url": s.get("url") or None,
+        "updated": s.get("updated"),
+        "expire": s.get("expire"),
+        "upload": s.get("upload"),
+        "download": s.get("download"),
+        "total": s.get("total"),
+        "nodes": s.get("nodes", []),
+    }
+
+
+def list_subs() -> list[dict[str, Any]]:
+    return [_public(s) for s in _load()]
+
+
+def _parse_yaml_nodes(yaml_text: str) -> list[str]:
+    """轻量解析(不引 PyYAML 依赖):正则抽出 name: xxx 的节点名。
+    够前端展示用;真要用节点时 mihomo 自己再解析。"""
+    names: list[str] = []
+    in_proxies = False
+    for line in (yaml_text or "").splitlines():
+        s = line.rstrip()
+        if re.match(r"^proxies\s*:", s):
+            in_proxies = True
+            continue
+        # 简单结束识别:遇到另一个顶层 key
+        if in_proxies and re.match(r"^[A-Za-z_][\w-]*\s*:", s) and not s.lstrip().startswith("-"):
+            in_proxies = False
+        if not in_proxies:
+            continue
+        m = re.search(r"name\s*:\s*['\"]?([^'\"]+?)['\"]?\s*(?:,|$)", s)
+        if m:
+            names.append(m.group(1).strip())
+    return names
+
+
+_SUB_INFO_RE = re.compile(
+    r"(upload|download|total|expire)\s*=\s*(\d+)", re.I
+)
+
+
+def _parse_sub_info(header: str) -> dict[str, int]:
+    """subscription-userinfo: upload=1; download=2; total=3; expire=4"""
+    out: dict[str, int] = {}
+    for m in _SUB_INFO_RE.finditer(header or ""):
+        out[m.group(1).lower()] = int(m.group(2))
+    return out
+
+
+def _fetch_url(url: str) -> tuple[str, dict[str, int]]:
+    """拉取订阅 URL,返回 (yaml_text, sub_info_dict)。"""
+    headers = {"User-Agent": "ClashforWindows/0.20.39"}  # 多数订阅源识别这个 UA
+    with httpx.Client(timeout=20.0, follow_redirects=True,
+                       headers=headers) as c:
+        r = c.get(url)
+    r.raise_for_status()
+    info = _parse_sub_info(r.headers.get("subscription-userinfo", ""))
+    return r.text, info
+
+
+def add_sub(name: str, url: str | None = None,
+            yaml_content: str | None = None) -> dict[str, Any]:
+    items = _load()
+    sid = uuid.uuid4().hex[:12]
+    src = "url" if (url and url.strip()) else "yaml"
+    yaml_text = yaml_content or ""
+    info: dict[str, int] = {}
+    if src == "url":
+        try:
+            yaml_text, info = _fetch_url(url.strip())  # type: ignore[arg-type]
+        except (httpx.HTTPError, ValueError, RuntimeError) as e:
+            raise ValueError(f"拉取订阅失败:{e}") from e
+    if not yaml_text.strip():
+        raise ValueError("订阅内容为空(URL 没下载到 / YAML 没填)")
+    nodes = _parse_yaml_nodes(yaml_text)
+    rec = {
+        "id": sid,
+        "name": name or "未命名订阅",
+        "source": src,
+        "url": (url.strip() if src == "url" else None),
+        "yaml_content": yaml_text,
+        "updated": int(time.time()),
+        "upload": info.get("upload"),
+        "download": info.get("download"),
+        "total": info.get("total"),
+        "expire": info.get("expire"),
+        "nodes": nodes,
+    }
+    items.append(rec)
+    _save(items)
+    return _public(rec)
+
+
+def delete_sub(sid: str) -> bool:
+    items = _load()
+    new = [s for s in items if s["id"] != sid]
+    if len(new) == len(items):
+        return False
+    _save(new)
+    return True
+
+
+def refresh_sub(sid: str) -> dict[str, Any]:
+    items = _load()
+    for s in items:
+        if s["id"] != sid:
+            continue
+        if s.get("source") != "url" or not s.get("url"):
+            raise ValueError("非 URL 订阅,无法刷新")
+        try:
+            yaml_text, info = _fetch_url(s["url"])
+        except (httpx.HTTPError, ValueError, RuntimeError) as e:
+            raise ValueError(f"刷新失败:{e}") from e
+        s["yaml_content"] = yaml_text
+        s["updated"] = int(time.time())
+        if "upload" in info:
+            s["upload"] = info["upload"]
+        if "download" in info:
+            s["download"] = info["download"]
+        if "total" in info:
+            s["total"] = info["total"]
+        if "expire" in info:
+            s["expire"] = info["expire"]
+        s["nodes"] = _parse_yaml_nodes(yaml_text)
+        _save(items)
+        return _public(s)
+    raise ValueError("订阅不存在")
+
+
+def get_sub_internal(sid: str) -> dict[str, Any] | None:
+    """供 P4 mihomo 集成读取完整 yaml + nodes。"""
+    for s in _load():
+        if s["id"] == sid:
+            return s
+    return None

@@ -182,6 +182,42 @@ export const installGit = (url: string, install_dir: string) =>
     installer_log_tail?: string;
   }>("/api/git/install", "POST", { url, install_dir });
 
+export interface VpnSub {
+  id: string;
+  name: string;
+  source: "url" | "yaml";
+  url?: string | null;
+  updated?: number; // unix seconds
+  expire?: number;
+  upload?: number;
+  download?: number;
+  total?: number;
+  nodes?: string[];
+}
+export const listVpnSubs = () => getJSON<VpnSub[]>("/api/vpn/subs");
+export const addVpnSub = (p: {
+  name: string;
+  url?: string | null;
+  yaml?: string | null;
+}) => sendJSON<VpnSub>("/api/vpn/subs", "POST", p);
+export const deleteVpnSub = (id: string) =>
+  sendJSON<{ ok: boolean }>(`/api/vpn/subs/${id}`, "DELETE");
+export const refreshVpnSub = (id: string) =>
+  sendJSON<VpnSub>(`/api/vpn/subs/${id}/refresh`, "POST");
+
+export interface ProxyInfo {
+  enabled: boolean;
+  key: string;
+  host: string;
+  port: number;
+  models_count: number;
+}
+export const getProxyInfo = () => getJSON<ProxyInfo>("/api/proxy/info");
+export const toggleProxy = (enabled: boolean) =>
+  sendJSON<{ enabled: boolean }>("/api/proxy/toggle", "POST", { enabled });
+export const regenProxyKey = () =>
+  sendJSON<{ key: string }>("/api/proxy/regen-key", "POST");
+
 export const getTheme = () => getJSON<{ theme: ThemeMode }>("/api/theme");
 export const setTheme = (theme: ThemeMode) =>
   sendJSON<{ theme: ThemeMode }>("/api/theme", "POST", { theme });

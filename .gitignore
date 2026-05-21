@@ -15,6 +15,9 @@ data/
 # 本地私有备注目录（仅本机，不进仓库）；上传自检亦会兜底拦截
 .private-memory/
 
+# 本地参考资料(用户自己放的样例项目/压缩包),不进公开仓库
+参考文件放置处/
+
 # Python 后端
 backend/.venv/
 # PyInstaller 中间产物 / 冻结出的后端 exe

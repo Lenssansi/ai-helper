@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   agentRollback,
-  deleteAgentSession,
   getAgentSession,
   getProviders,
   getWorkspace,
@@ -11,7 +10,6 @@ import {
   setActive,
   streamSSE,
   type AgentEvent,
-  type AgentSessionSummary,
   type ProvidersState,
   type WhoAmI,
   type WorkspaceCfg,
@@ -20,11 +18,21 @@ import Markdown from "../components/Markdown";
 
 type Status = "idle" | "running" | "awaiting" | "done" | "error";
 
-export default function AgentPage({ who }: { who: WhoAmI | null }) {
+export default function AgentPage({
+  who,
+  activeSessionId,
+  onSessionChange,
+  onListUpdate,
+}: {
+  who: WhoAmI | null;
+  // 父级(App)控制当前打开的编程会话 id
+  activeSessionId: string | null;
+  onSessionChange: (id: string | null) => void;
+  onListUpdate: () => void;
+}) {
   const canAgent = who ? who.permissions.agent !== false : true;
   const [ws, setWs] = useState<WorkspaceCfg | null>(null);
   const [ps, setPs] = useState<ProvidersState | null>(null);
-  const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
   const [task, setTask] = useState("");
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [status, setStatus] = useState<Status>("idle");
@@ -36,36 +44,28 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
   const endRef = useRef<HTMLDivElement>(null);
   const runIdRef = useRef("");
 
-  function refreshSessions() {
-    listAgentSessions().then(setSessions).catch(() => void 0);
-  }
   useEffect(() => {
     (async () => {
       getProviders().then(setPs).catch(() => void 0);
-      let cwd = "";
       try {
         const w = await getWorkspace();
         setWs(w);
-        cwd = w.cwd || "";
       } catch {
         /* ignore */
       }
-      try {
-        const list = await listAgentSessions();
-        setSessions(list);
-        // 返回编程页时自动载回上次会话（优先当前工作目录的最近一个）
-        if (!runIdRef.current && list.length) {
-          const mine = list.filter((s) => s.cwd === cwd);
-          const pick = (mine.length ? mine : list)[0];
-          if (pick) await loadSession(pick.id);
-        }
-      } catch {
-        /* ignore */
-      } finally {
-        setInitLoading(false);
-      }
+      setInitLoading(false);
     })();
   }, []);
+
+  // 跟随父级 activeSessionId:null=新会话;非空且不同=载入
+  useEffect(() => {
+    if (activeSessionId === null) {
+      newSession();
+    } else if (activeSessionId !== runIdRef.current) {
+      loadSession(activeSessionId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId]);
 
   async function loadSession(id: string) {
     try {
@@ -81,14 +81,6 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
     } catch {
       /* ignore */
     }
-  }
-
-  async function deleteCurrent() {
-    if (!runIdRef.current) return;
-    if (!confirm("删除当前编程会话记录？(不影响已落盘的代码改动)")) return;
-    await deleteAgentSession(runIdRef.current);
-    newSession();
-    refreshSessions();
   }
 
   const activeProv =
@@ -108,12 +100,12 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
   }
   async function pickCwd(dir: string) {
     setWs(await saveWorkspace({ cwd: dir }));
-    // 该目录有历史会话→跳到最近一个；没有→开新会话
+    // 该目录有历史会话→跳到最近一个;没有→新会话(父级状态驱动)
     const list = await listAgentSessions();
-    setSessions(list);
-    const mine = list.filter((s) => s.cwd === dir); // 已按 updated 倒序
-    if (mine.length) loadSession(mine[0].id);
-    else newSession();
+    onListUpdate();
+    const mine = list.filter((s) => s.cwd === dir);
+    if (mine.length) onSessionChange(mine[0].id);
+    else onSessionChange(null);
   }
   async function initGit() {
     if (!ws?.cwd) return;
@@ -132,6 +124,7 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
     if (e.type === "run" && e.run_id) {
       runIdRef.current = e.run_id;
       setRunId(e.run_id);
+      onSessionChange(e.run_id); // 新会话生成 → 通知父级更新 Sidebar 选中
     }
     if (e.type === "confirm") {
       setStatus("awaiting");
@@ -155,7 +148,7 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
       : { task: t, web: webOn };
     acRef.current = streamSSE(path, body, onEvent, () => {
       setStatus((s) => (s === "running" ? "idle" : s));
-      refreshSessions();
+      onListUpdate();
     });
   }
 
@@ -184,7 +177,7 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
       onEvent,
       () => {
         setStatus((s) => (s === "running" ? "idle" : s));
-        refreshSessions();
+        onListUpdate();
       }
     );
   }
@@ -252,18 +245,6 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
               </select>
             </>
           )}
-          <select
-            title="历史编程会话"
-            value={runId || ""}
-            onChange={(e) => e.target.value && loadSession(e.target.value)}
-          >
-            <option value="">历史会话…</option>
-            {sessions.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.title}
-              </option>
-            ))}
-          </select>
           <button
             className={"cfg-toggle" + (webOn ? " on" : "")}
             onClick={() => setWebOn((v) => !v)}
@@ -271,14 +252,8 @@ export default function AgentPage({ who }: { who: WhoAmI | null }) {
           >
             🌐 联网{webOn ? "·开" : "·关"}
           </button>
-          <button onClick={newSession} title="清空并开新会话">
-            ＋ 新会话
-          </button>
           {runId && (
             <>
-              <button className="danger" onClick={deleteCurrent}>
-                删除会话
-              </button>
               <button className="danger" onClick={doRollback}>
                 回滚检查点
               </button>

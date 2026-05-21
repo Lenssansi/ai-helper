@@ -1,18 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import {
   createConversation,
-  deleteConversation,
   getConversation,
   getProviders,
   getWorkspace,
-  listConversations,
   saveConversation,
   setActive,
   streamChat,
   streamSSE,
   type AgentEvent,
   type ChatMsg,
-  type ConvSummary,
   type ProvidersState,
 } from "../api";
 import Markdown from "../components/Markdown";
@@ -37,13 +34,20 @@ function looksLikeFileTask(text: string): boolean {
   return _FILE_INTENT.some((re) => re.test(text));
 }
 
-export default function ChatPage() {
+export default function ChatPage({
+  activeConvId,
+  onConvChange,
+  onListUpdate,
+}: {
+  // 父级(App)控制当前打开的对话 id;Sidebar 切换历史时由父更新
+  activeConvId: string | null;
+  onConvChange: (id: string | null) => void;
+  onListUpdate: () => void;
+}) {
   const [ps, setPs] = useState<ProvidersState | null>(null);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
-  const [convList, setConvList] = useState<ConvSummary[]>([]);
-  const [convId, setConvId] = useState<string | null>(null);
   const [initLoading, setInitLoading] = useState(true);
   const [webOn, setWebOn] = useState(false);
   // 文件工具默认始终可用(不再设 toggle);设置工具(改设置)从对话中移除
@@ -79,9 +83,6 @@ export default function ChatPage() {
     (async () => {
       try {
         getProviders().then(setPs).catch(() => void 0);
-        const list = await listConversations();
-        setConvList(list);
-        if (list.length) await loadConv(list[0].id);
       } catch {
         /* ignore */
       } finally {
@@ -89,6 +90,16 @@ export default function ChatPage() {
       }
     })();
   }, []);
+
+  // 跟随父级 activeConvId:null=新对话;非空且与内部 convId 不一致=载入
+  useEffect(() => {
+    if (activeConvId === null) {
+      newChat();
+    } else if (activeConvId !== convIdRef.current) {
+      loadConv(activeConvId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConvId]);
 
   useEffect(() => {
     const el = msgsRef.current;
@@ -125,7 +136,7 @@ export default function ChatPage() {
     const title =
       msgs.find((m) => m.role === "user")?.content.slice(0, 40) || "新对话";
     saveConversation(id, title, msgs, webOnRef.current, true)
-      .then(refreshList)
+      .then(onListUpdate)
       .catch(() => void 0);
   }
 
@@ -151,19 +162,10 @@ export default function ChatPage() {
     });
   }
 
-  async function refreshList() {
-    try {
-      setConvList(await listConversations());
-    } catch {
-      /* ignore */
-    }
-  }
-
   async function loadConv(id: string) {
     try {
       const c = await getConversation(id);
       convIdRef.current = c.id;
-      setConvId(c.id);
       setWebOn(!!c.web); // 该会话各自的联网开关
       // 文件模式现在总是开启,不再从会话恢复
       jumpBottomRef.current = true;
@@ -176,7 +178,6 @@ export default function ChatPage() {
   function newChat() {
     if (streaming) return;
     convIdRef.current = null;
-    setConvId(null);
     setMessages([]);
     setWebOn(false); // 新会话默认关联网
     // 文件模式始终开启
@@ -202,26 +203,18 @@ export default function ChatPage() {
     _persistFlags(next, true); // 文件总开,只持久化 web 变化
   }
 
-  async function deleteCurrent() {
-    const id = convIdRef.current;
-    if (!id) return;
-    await deleteConversation(id);
-    newChat();
-    refreshList();
-  }
-
   async function persist(msgs: ChatMsg[]) {
     if (!msgs.length) return;
     let id = convIdRef.current;
     if (!id) {
       id = (await createConversation()).id;
       convIdRef.current = id;
-      setConvId(id);
+      onConvChange(id);
     }
     const title =
       msgs.find((m) => m.role === "user")?.content.slice(0, 40) || "新对话";
     await saveConversation(id, title, msgs, webOnRef.current, true);
-    refreshList();
+    onListUpdate();
   }
 
   function cfOnEvent(e: AgentEvent) {
@@ -387,25 +380,6 @@ export default function ChatPage() {
       <div className="chat-head">
         <h1>对话</h1>
         <div className="chat-tools">
-          <button onClick={newChat} title="开始新对话">
-            ＋ 新对话
-          </button>
-          <select
-            value={convId ?? ""}
-            onChange={(e) => e.target.value && loadConv(e.target.value)}
-          >
-            <option value="">历史对话…</option>
-            {convList.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.title}
-              </option>
-            ))}
-          </select>
-          {convId && (
-            <button className="danger" onClick={deleteCurrent} title="删除当前对话">
-              删除
-            </button>
-          )}
           <button
             className={"cfg-toggle" + (webOn ? " on" : "")}
             onClick={toggleWeb}

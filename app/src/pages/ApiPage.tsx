@@ -176,17 +176,34 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
     <div className="page">
       <div className="chat-head">
         <h1>API 管理</h1>
-        {canManage && !draft && (
-          <button
-            className="cfg-toggle"
-            onClick={() => {
-              setErr("");
-              setDraft(blankDraft());
-            }}
-          >
-            ＋ 新增 API
-          </button>
-        )}
+        <div className="chat-tools">
+          {ps && !draft && (
+            <button
+              className="cfg-toggle"
+              onClick={async () => {
+                for (const p of ps.providers) {
+                  if (!p.api_key_set) continue;
+                  await runTest(p);
+                }
+              }}
+              disabled={Object.values(testing).some(Boolean)}
+              title="依次测试所有已配 key 的 API"
+            >
+              批量测试
+            </button>
+          )}
+          {canManage && !draft && (
+            <button
+              className="cfg-toggle"
+              onClick={() => {
+                setErr("");
+                setDraft(blankDraft());
+              }}
+            >
+              ＋ 新增 API
+            </button>
+          )}
+        </div>
       </div>
 
       {!canManage && (

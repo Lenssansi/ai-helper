@@ -67,6 +67,8 @@ DEFAULTS: dict[str, Any] = {
     "port": 8756,
     "remote_enabled": False,
     "token": "",
+    "proxy_api_key": "",  # /v1/* 聚合代理 Bearer key,首次启动自动生成
+    "proxy_enabled": True,
     "providers": [],
     "active": {"provider_id": "", "preset_label": ""},
     "theme": "light",  # dark | light | system —— 首次安装默认亮色
@@ -93,10 +95,36 @@ DEFAULTS: dict[str, Any] = {
 
 
 def _ensure_token(s: dict[str, Any]) -> bool:
+    dirty = False
     if not s.get("token"):
         s["token"] = secrets.token_urlsafe(24)
-        return True
-    return False
+        dirty = True
+    if not s.get("proxy_api_key"):
+        s["proxy_api_key"] = "aih-" + secrets.token_urlsafe(20)
+        dirty = True
+    return dirty
+
+
+def get_proxy_key() -> str:
+    return load_settings().get("proxy_api_key", "")
+
+
+def regenerate_proxy_key() -> str:
+    s = load_settings()
+    s["proxy_api_key"] = "aih-" + secrets.token_urlsafe(20)
+    save_settings(s)
+    return s["proxy_api_key"]
+
+
+def get_proxy_enabled() -> bool:
+    return bool(load_settings().get("proxy_enabled", True))
+
+
+def set_proxy_enabled(v: bool) -> bool:
+    s = load_settings()
+    s["proxy_enabled"] = bool(v)
+    save_settings(s)
+    return s["proxy_enabled"]
 
 
 OLLAMA_PID = "__ollama__"  # 历史值,仅用于迁移老配置时识别
