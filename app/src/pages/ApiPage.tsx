@@ -407,23 +407,38 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
             <>
               <label>
                 订阅
-                <select
-                  value={draft.vpn_sub_id}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      vpn_sub_id: e.target.value,
-                      vpn_node: "",
-                    })
-                  }
-                >
-                  <option value="">— 选订阅 —</option>
-                  {vpnSubs.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="preset-row">
+                  <select
+                    value={draft.vpn_sub_id}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        vpn_sub_id: e.target.value,
+                        vpn_node: "",
+                      })
+                    }
+                  >
+                    <option value="">— 选订阅 —</option>
+                    {vpnSubs.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}({(s.nodes || []).length} 节点)
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        setVpnSubs(await listVpnSubs());
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    title="重新拉取订阅列表(VPN 页刷过订阅后用)"
+                  >
+                    ↻
+                  </button>
+                </div>
               </label>
               <div className="muted">
                 勾选要纳入的节点(可多选);测延迟看哪条最快;再用「●」选活跃节点(运行时实际用它,不会自动切)。
@@ -549,8 +564,15 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                 })}
                 {!(
                   vpnSubs.find((s) => s.id === draft.vpn_sub_id)?.nodes || []
-                ).length && (
-                  <div className="muted">(订阅没节点;先去 VPN 页刷新或换订阅)</div>
+                ).length &&
+                  draft.vpn_sub_id && (
+                    <div className="muted">
+                      该订阅未解析出节点 — 请回 VPN 页点「刷新」(已更新解析器);
+                      或确认订阅源返回的是 Clash YAML(不是 v2ray/sub 链接)。
+                    </div>
+                  )}
+                {!draft.vpn_sub_id && (
+                  <div className="muted">先在上方选个订阅,节点会出现在这里。</div>
                 )}
               </div>
               <div className="muted">

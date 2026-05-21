@@ -58,25 +58,59 @@ def _public(s: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_subs() -> list[dict[str, Any]]:
-    return [_public(s) for s in _load()]
+    items = _load()
+    # 自愈:解析器升级后,旧订阅 nodes 为空就重解析(无需用户手动刷新)
+    healed = False
+    for s in items:
+        if not s.get("nodes") and s.get("yaml_content"):
+            ns = _parse_yaml_nodes(s["yaml_content"])
+            if ns:
+                s["nodes"] = ns
+                healed = True
+    if healed:
+        _save(items)
+    return [_public(s) for s in items]
 
 
 def _parse_yaml_nodes(yaml_text: str) -> list[str]:
-    """轻量解析(不引 PyYAML 依赖):正则抽出 name: xxx 的节点名。
-    够前端展示用;真要用节点时 mihomo 自己再解析。"""
+    """从 Clash 订阅 YAML 抽节点名。优先用 PyYAML(可靠),失败退正则。"""
+    if not yaml_text or not yaml_text.strip():
+        return []
+    # 1) PyYAML 路线
+    try:
+        import yaml as _yaml
+        # 部分订阅含 !<str>/!!str 这类 tag,用 SafeLoader 兜底
+        data = _yaml.safe_load(yaml_text)
+        if isinstance(data, dict):
+            proxies = data.get("proxies") or []
+            names: list[str] = []
+            seen: set[str] = set()
+            for p in proxies:
+                if isinstance(p, dict):
+                    n = p.get("name")
+                    if isinstance(n, str) and n.strip() and n not in seen:
+                        names.append(n.strip())
+                        seen.add(n)
+            if names:
+                return names
+    except Exception:  # noqa: BLE001
+        # YAML 解析炸了 → 退正则
+        pass
+    # 2) 正则兜底(老逻辑)
     names: list[str] = []
     in_proxies = False
-    for line in (yaml_text or "").splitlines():
+    for line in yaml_text.splitlines():
         s = line.rstrip()
         if re.match(r"^proxies\s*:", s):
             in_proxies = True
             continue
-        # 简单结束识别:遇到另一个顶层 key
-        if in_proxies and re.match(r"^[A-Za-z_][\w-]*\s*:", s) and not s.lstrip().startswith("-"):
+        if (in_proxies
+                and re.match(r"^[A-Za-z_][\w-]*\s*:", s)
+                and not s.lstrip().startswith("-")):
             in_proxies = False
         if not in_proxies:
             continue
-        m = re.search(r"name\s*:\s*['\"]?([^'\"]+?)['\"]?\s*(?:,|$)", s)
+        m = re.search(r"name\s*:\s*['\"]?([^'\"]+?)['\"]?\s*(?:,|\}|$)", s)
         if m:
             names.append(m.group(1).strip())
     return names
