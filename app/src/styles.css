@@ -298,6 +298,113 @@ body {
   gap: 10px;
   flex-wrap: wrap;
 }
+/* 编程 Agent 的左右双栏:消息 + 右侧 TODO 面板 */
+.agent-body {
+  flex: 1;
+  display: flex;
+  gap: 16px;
+  min-height: 0;
+  overflow: hidden;
+}
+.agent-body .msgs {
+  flex: 1;
+  min-width: 0;
+}
+.todo-panel {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.todo-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+.todo-ring {
+  flex-shrink: 0;
+}
+.todo-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.todo-stats-main {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.todo-stats-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.todo-pill {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  color: var(--muted);
+}
+.todo-pill.doing {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.todo-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.todo-item {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  line-height: 1.5;
+  border: 1px solid transparent;
+}
+.todo-item .todo-mark {
+  flex-shrink: 0;
+  width: 16px;
+  font-weight: 700;
+}
+.todo-item.s-completed {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.todo-item.s-completed .todo-mark {
+  color: var(--ok, #2da44e);
+}
+.todo-item.s-in_progress {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+.todo-item.s-in_progress .todo-mark {
+  color: var(--accent);
+}
+.todo-item.s-pending .todo-mark {
+  color: var(--muted);
+}
+.ev.ev-info {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  padding: 4px 8px;
+}
+
 /* 加载转圈 */
 .spinner {
   display: inline-block;

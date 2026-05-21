@@ -78,6 +78,11 @@ applog.setup_logging()
 
 app = FastAPI(title="ai-helper", version=APP_VERSION)
 
+# 退出时清掉所有被按需启动的 mihomo 子代理
+import atexit
+import vpn as _vpn_mod  # noqa: E402
+atexit.register(_vpn_mod.shutdown_all)
+
 # 开发期前端跑在 Vite(5173)，与后端(8756)跨端口，需放行本地源。
 app.add_middleware(
     CORSMiddleware,

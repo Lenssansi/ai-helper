@@ -4,6 +4,7 @@ import {
   discoverProviderModels,
   getProviders,
   getUsage,
+  listVpnSubs,
   resetUsage,
   setActive,
   testProvider,
@@ -11,6 +12,7 @@ import {
   type ProvidersState,
   type ProviderTest,
   type UsageState,
+  type VpnSub,
   type WhoAmI,
 } from "../api";
 
@@ -28,6 +30,9 @@ interface Draft {
   api_key_set: boolean;
   capability: string;
   presets: PresetRow[];
+  use_vpn: boolean;
+  vpn_sub_id: string;
+  vpn_node: string;
 }
 
 const FORMATS = ["openai_compat", "anthropic", "gemini", "custom"];
@@ -41,6 +46,9 @@ function blankDraft(): Draft {
     api_key_set: false,
     capability: "",
     presets: [{ label: "默认", model: "", extra: "" }],
+    use_vpn: false,
+    vpn_sub_id: "",
+    vpn_node: "",
   };
 }
 
@@ -52,6 +60,7 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
   const [usage, setUsage] = useState<UsageState | null>(null);
   const [testing, setTesting] = useState<Record<string, boolean>>({});
   const [tested, setTested] = useState<Record<string, ProviderTest>>({});
+  const [vpnSubs, setVpnSubs] = useState<VpnSub[]>([]);
 
   async function reload() {
     try {
@@ -61,6 +70,11 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
     }
     try {
       setUsage(await getUsage());
+    } catch {
+      /* ignore */
+    }
+    try {
+      setVpnSubs(await listVpnSubs());
     } catch {
       /* ignore */
     }
@@ -122,6 +136,9 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
               : "",
           }))
         : [{ label: "默认", model: "", extra: "" }],
+      use_vpn: !!p.use_vpn,
+      vpn_sub_id: p.vpn_sub_id || "",
+      vpn_node: p.vpn_node || "",
     });
   }
 
@@ -154,6 +171,9 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
         api_key: draft.api_key.trim() || undefined,
         capability: draft.capability.trim(),
         presets,
+        use_vpn: draft.use_vpn,
+        vpn_sub_id: draft.use_vpn ? draft.vpn_sub_id : "",
+        vpn_node: draft.use_vpn ? draft.vpn_node : "",
       });
       setDraft(null);
       reload();
@@ -358,6 +378,69 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
               placeholder="推理、代码、数学较强，长文本与中文不错"
             />
           </label>
+
+          <div className="set-title">走 VPN(可选)</div>
+          <label
+            style={{ display: "flex", flexDirection: "row", gap: 8, alignItems: "center" }}
+          >
+            <input
+              type="checkbox"
+              checked={draft.use_vpn}
+              onChange={(e) =>
+                setDraft({ ...draft, use_vpn: e.target.checked })
+              }
+            />
+            <span>
+              调用此 API 走指定 VPN(按需启动 mihomo,仅服务此 API)
+            </span>
+          </label>
+          {draft.use_vpn && (
+            <>
+              <label>
+                订阅
+                <select
+                  value={draft.vpn_sub_id}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      vpn_sub_id: e.target.value,
+                      vpn_node: "",
+                    })
+                  }
+                >
+                  <option value="">— 选订阅 —</option>
+                  {vpnSubs.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                节点
+                <select
+                  value={draft.vpn_node}
+                  onChange={(e) =>
+                    setDraft({ ...draft, vpn_node: e.target.value })
+                  }
+                  disabled={!draft.vpn_sub_id}
+                >
+                  <option value="">— 选节点 —</option>
+                  {(
+                    vpnSubs.find((s) => s.id === draft.vpn_sub_id)?.nodes || []
+                  ).map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="muted">
+                需要 mihomo 二进制(放 D:\ai-helper\mihomo\mihomo.exe 或加 PATH)。
+                首次调用此 API 时自动起子代理,关软件时一起停。
+              </div>
+            </>
+          )}
 
           <div className="set-title">预设（模型 + 模式）</div>
           <div className="cfg-actions" style={{ marginBottom: 6 }}>

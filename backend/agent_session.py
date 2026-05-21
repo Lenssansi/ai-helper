@@ -23,7 +23,7 @@ import re
 from skills_loader import build_injection
 from providers.openai_compat import OpenAICompatProvider
 from agent_tools import (
-    is_high_risk, run_tool, set_extra_paths, tool_specs,
+    is_high_risk, run_tool, set_extra_paths, set_todos, tool_specs,
 )
 import userdirs
 
@@ -102,6 +102,7 @@ def _persist(rid: str) -> None:
         "transcript": run.get("transcript", []),
         "status": run.get("status", "done"),
         "web_on": run.get("web_on", True),
+        "todos": run.get("todos", []),
     })
 
 
@@ -123,6 +124,7 @@ def _ensure_loaded(rid: str) -> bool:
         "cwd": s.get("cwd", ""),
         "web_on": s.get("web_on", True),
         "nudged_this_turn": False,
+        "todos": s.get("todos", []),
     }
     return True
 
@@ -147,6 +149,10 @@ _SYS = (
     "【临时授权】用户在消息中**明确写出的绝对路径**(如 D:\\foo)即便不在"
     "白名单也允许本轮访问;你可以直接对这些路径使用工具,无需先建议加"
     "白名单。"
+    "【待办清单】对**非简单任务**(超过 2 步),开局第一个工具调用就是"
+    "todo_set,列 3-8 项干练标题,status 全 pending;每开始一项就 "
+    "todo_update 改 in_progress,完成立刻 todo_update 改 completed。"
+    "前端会用环形进度条实时展示给用户。简单任务(如读一个文件)免列。"
     "当前工作目录：{cwd}"
 )
 
@@ -201,6 +207,7 @@ def start_run(task: str, web: bool = True) -> tuple[str | None, str | None]:
         "nudged_this_turn": False,  # 反铺垫骤停:每轮最多 nudge 一次
         "web_on": bool(web),       # 是否允许 Agent 调 web_search 工具
         "extra_paths": extras,     # 本轮临时授权路径(消息中明确写出的)
+        "todos": [],               # Claude 风格的待办清单 + 进度
     }
     _persist(rid)
     return rid, None
@@ -214,6 +221,8 @@ async def _drive(rid: str) -> AsyncIterator[bytes]:
     run = RUNS[rid]
     # 把本 run 的临时授权路径推到 agent_tools 模块全局,_safe 据此放行
     set_extra_paths(run.get("extra_paths") or [])
+    # 把本 run 的 todos 推回模块全局,让 todo_update 在正确的列表上操作
+    set_todos(run.get("todos") or [])
     prov, perr = _provider()
     if prov is None:
         run["status"] = "error"
@@ -254,6 +263,13 @@ async def _drive(rid: str) -> AsyncIterator[bytes]:
                 content = json.dumps(res, ensure_ascii=False)[:8000]
                 yield _rec(run, {"type": "result", "name": c["name"],
                                  "result": res})
+                # todo_set/todo_update 修改了清单 → 推送 todos 事件给前端
+                if c["name"] in ("todo_set", "todo_update") and isinstance(
+                    res, dict
+                ) and "todos" in res:
+                    run["todos"] = res["todos"]
+                    yield _rec(run, {"type": "todos",
+                                      "items": res["todos"]})
             run["messages"].append({
                 "role": "tool", "tool_call_id": c["id"],
                 "content": content,

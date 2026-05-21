@@ -343,6 +343,9 @@ def mask_provider(p: dict[str, Any]) -> dict[str, Any]:
         "api_key_set": bool(p.get("api_key")),
         "capability": p.get("capability", ""),
         "presets": p.get("presets", []),
+        "use_vpn": bool(p.get("use_vpn", False)),
+        "vpn_sub_id": p.get("vpn_sub_id", ""),
+        "vpn_node": p.get("vpn_node", ""),
     }
 
 
@@ -395,6 +398,9 @@ def get_active_resolved() -> dict[str, Any] | None:
         "provider_id": prov["id"],
         "provider_name": prov.get("name", ""),
         "preset_label": preset.get("label", ""),
+        "use_vpn": bool(prov.get("use_vpn", False)),
+        "vpn_sub_id": prov.get("vpn_sub_id", ""),
+        "vpn_node": prov.get("vpn_node", ""),
     }
 
 
@@ -420,6 +426,9 @@ def resolve_choice(provider_id: str, preset_label: str) -> dict[str, Any] | None
         "provider_id": prov["id"],
         "provider_name": prov.get("name", ""),
         "preset_label": preset.get("label", ""),
+        "use_vpn": bool(prov.get("use_vpn", False)),
+        "vpn_sub_id": prov.get("vpn_sub_id", ""),
+        "vpn_node": prov.get("vpn_node", ""),
     }
 
 
@@ -523,12 +532,17 @@ def upsert_provider(patch: dict[str, Any]) -> dict[str, Any]:
     providers: list[dict] = s["providers"]
     pid = patch.get("id")
     existing = _find(providers, pid) if pid else None
+    # VPN 字段:可空=该字段不变;显式 false / "" 则覆盖为关闭
+    vpn_fields = ("use_vpn", "vpn_sub_id", "vpn_node")
     if existing:
         for k in ("name", "format", "base_url", "capability", "presets"):
             if k in patch and patch[k] is not None:
                 existing[k] = patch[k]
         if patch.get("api_key"):  # 空=不改
             existing["api_key"] = patch["api_key"]
+        for k in vpn_fields:
+            if k in patch:
+                existing[k] = patch[k]
         target = existing
     else:
         target = {
@@ -539,6 +553,9 @@ def upsert_provider(patch: dict[str, Any]) -> dict[str, Any]:
             "api_key": patch.get("api_key", ""),
             "capability": patch.get("capability", ""),
             "presets": patch.get("presets", []),
+            "use_vpn": bool(patch.get("use_vpn", False)),
+            "vpn_sub_id": patch.get("vpn_sub_id", ""),
+            "vpn_node": patch.get("vpn_node", ""),
         }
         providers.append(target)
         if not s["active"].get("provider_id"):

@@ -11,6 +11,7 @@ import {
   streamSSE,
   type AgentEvent,
   type ProvidersState,
+  type TodoItem,
   type WhoAmI,
   type WorkspaceCfg,
 } from "../api";
@@ -40,6 +41,7 @@ export default function AgentPage({
   const [editArgs, setEditArgs] = useState("");
   const [webOn, setWebOn] = useState(true);
   const [initLoading, setInitLoading] = useState(true);
+  const [todos, setTodos] = useState<TodoItem[]>([]);
   const acRef = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const runIdRef = useRef("");
@@ -75,6 +77,11 @@ export default function AgentPage({
       setEvents(s.transcript || []);
       setStatus(s.status === "awaiting" ? "awaiting" : "done");
       setWebOn(s.web_on !== false); // 默认开
+      // 从 transcript 抽最后一次 todos 事件还原右侧面板
+      const lastTodos = [...(s.transcript || [])]
+        .reverse()
+        .find((ev) => ev.type === "todos");
+      setTodos(lastTodos?.items || []);
       const last = (s.transcript || [])[s.transcript.length - 1];
       if (s.status === "awaiting" && last?.args)
         setEditArgs(JSON.stringify(last.args, null, 2));
@@ -126,6 +133,9 @@ export default function AgentPage({
       setRunId(e.run_id);
       onSessionChange(e.run_id); // 新会话生成 → 通知父级更新 Sidebar 选中
     }
+    if (e.type === "todos" && e.items) {
+      setTodos(e.items);
+    }
     if (e.type === "confirm") {
       setStatus("awaiting");
       setEditArgs(JSON.stringify(e.args ?? {}, null, 2));
@@ -158,6 +168,7 @@ export default function AgentPage({
     setRunId("");
     setEvents([]);
     setStatus("idle");
+    setTodos([]);
   }
 
   function respond(approve: boolean) {
@@ -272,6 +283,7 @@ export default function AgentPage({
         </div>
       )}
 
+      <div className="agent-body">
       <div className="msgs">
         {initLoading && (
           <div className="loading-row">
@@ -301,6 +313,8 @@ export default function AgentPage({
           </div>
         )}
         <div ref={endRef} />
+      </div>
+      {todos.length > 0 && <TodoPanel todos={todos} />}
       </div>
 
       <div className="composer">
@@ -371,5 +385,88 @@ function EventRow({ e }: { e: AgentEvent }) {
   if (e.type === "error")
     return <div className="ev ev-err">出错：{e.error}</div>;
   if (e.type === "done") return <div className="ev ev-done">— 任务结束 —</div>;
+  if (e.type === "info")
+    return <div className="ev ev-info">{e.content}</div>;
+  // todos 事件不直接渲染到主流;走右侧面板
   return null;
+}
+
+function TodoPanel({ todos }: { todos: TodoItem[] }) {
+  const total = todos.length;
+  const done = todos.filter((t) => t.status === "completed").length;
+  const active = todos.filter((t) => t.status === "in_progress").length;
+  const progress = total > 0 ? done / total : 0;
+  return (
+    <aside className="todo-panel">
+      <div className="todo-head">
+        <Ring progress={progress} />
+        <div className="todo-stats">
+          <div className="todo-stats-main">
+            {done} / {total}
+          </div>
+          <div className="todo-stats-sub">
+            {active > 0 && <span className="todo-pill doing">进行 {active}</span>}
+            <span className="todo-pill pending">
+              待办 {total - done - active}
+            </span>
+          </div>
+        </div>
+      </div>
+      <div className="todo-list">
+        {todos.map((t) => (
+          <div key={t.id} className={"todo-item s-" + t.status}>
+            <span className="todo-mark" aria-hidden="true">
+              {t.status === "completed"
+                ? "✓"
+                : t.status === "in_progress"
+                ? "●"
+                : "○"}
+            </span>
+            <span className="todo-title">{t.title}</span>
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function Ring({ progress }: { progress: number }) {
+  const r = 26;
+  const c = 2 * Math.PI * r;
+  const p = Math.max(0, Math.min(1, progress));
+  const off = c * (1 - p);
+  return (
+    <svg width="68" height="68" viewBox="0 0 68 68" className="todo-ring">
+      <circle
+        cx="34"
+        cy="34"
+        r={r}
+        fill="none"
+        stroke="var(--border-2)"
+        strokeWidth="5"
+      />
+      <circle
+        cx="34"
+        cy="34"
+        r={r}
+        fill="none"
+        stroke="var(--accent)"
+        strokeWidth="5"
+        strokeDasharray={c}
+        strokeDashoffset={off}
+        transform="rotate(-90 34 34)"
+        strokeLinecap="round"
+      />
+      <text
+        x="34"
+        y="39"
+        textAnchor="middle"
+        fontSize="14"
+        fontWeight="600"
+        fill="var(--text)"
+      >
+        {Math.round(p * 100)}%
+      </text>
+    </svg>
+  );
 }

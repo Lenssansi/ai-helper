@@ -33,6 +33,9 @@ export interface ProviderInfo {
   api_key_set: boolean;
   capability: string;
   presets: Preset[];
+  use_vpn?: boolean;
+  vpn_sub_id?: string;
+  vpn_node?: string;
 }
 
 export interface ActiveSel {
@@ -347,6 +350,12 @@ export const agentRollback = (run_id: string) =>
     { run_id }
   );
 
+export interface TodoItem {
+  id: string;
+  title: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export interface AgentEvent {
   type:
     | "user"
@@ -357,7 +366,9 @@ export interface AgentEvent {
     | "confirm"
     | "answer"
     | "done"
-    | "error";
+    | "error"
+    | "info"
+    | "todos";
   run_id?: string;
   commit?: string;
   name?: string;
@@ -367,6 +378,7 @@ export interface AgentEvent {
   result?: unknown;
   content?: string;
   error?: string;
+  items?: TodoItem[]; // type === "todos" 时携带最新清单
 }
 
 // 通用 SSE POST：逐事件回调，返回 AbortController

@@ -18,6 +18,10 @@ data/
 # 本地参考资料(用户自己放的样例项目/压缩包),不进公开仓库
 参考文件放置处/
 
+# mihomo 二进制 + 临时工作目录;由用户单独放置,不上传公开仓库
+mihomo/
+backend/data/mihomo_work/
+
 # Python 后端
 backend/.venv/
 # PyInstaller 中间产物 / 冻结出的后端 exe

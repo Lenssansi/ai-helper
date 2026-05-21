@@ -241,6 +241,69 @@ def git_init(path: str) -> dict[str, Any]:
     return {"path": str(p), "initialized": True}
 
 
+# ---------- TODO 清单(给前端 Claude 风格的待办面板用)----------
+
+_TODOS: list[dict[str, Any]] = []
+
+
+def set_todos(items: list[dict[str, Any]]) -> None:
+    """agent_session 在每轮起始处把上一轮 RUNS[rid]['todos'] 推回模块全局,
+    让本轮的 todo_update 能在正确的列表上操作。"""
+    global _TODOS
+    _TODOS = list(items or [])
+
+
+def get_todos() -> list[dict[str, Any]]:
+    return list(_TODOS)
+
+
+def _norm_status(s: str | None) -> str:
+    v = (s or "pending").strip().lower()
+    if v in ("done", "complete", "completed", "✓"):
+        return "completed"
+    if v in ("doing", "active", "running", "in_progress", "wip"):
+        return "in_progress"
+    return "pending"
+
+
+def todo_set(items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """覆盖式重设整个 TODO 列表。
+    items 每项可含 {id?, title, status?}; status: pending/in_progress/completed。
+    返回 {todos:[...]}, 由前端在右侧 TODO 面板渲染环形进度条。"""
+    global _TODOS
+    out: list[dict[str, Any]] = []
+    for i, it in enumerate(items or []):
+        if not isinstance(it, dict):
+            continue
+        title = str(it.get("title") or "").strip()
+        if not title:
+            continue
+        tid = str(it.get("id") or f"t{i + 1}")
+        out.append({
+            "id": tid,
+            "title": title[:200],
+            "status": _norm_status(it.get("status")),
+        })
+    _TODOS = out
+    return {"todos": out, "count": len(out)}
+
+
+def todo_update(id: str, status: str) -> dict[str, Any]:
+    """把某条 todo 状态改成 pending/in_progress/completed。"""
+    global _TODOS
+    target = _norm_status(status)
+    found = False
+    for t in _TODOS:
+        if t["id"] == id:
+            t["status"] = target
+            found = True
+            break
+    if not found:
+        return {"error": f"未找到 todo id={id}",
+                "todos": list(_TODOS)}
+    return {"todos": list(_TODOS)}
+
+
 def web_search(query: str, n: int = 5) -> dict[str, Any]:
     """联网搜索（无需 key，只读，自动执行）。供查使用文档/实时信息。"""
     from search import web_search_sync
@@ -262,6 +325,8 @@ def run_tests() -> dict[str, Any]:
 # name -> (handler, high_risk 需用户确认)
 REGISTRY: dict[str, tuple[Any, bool]] = {
     "user_dirs": (user_dirs, False),
+    "todo_set": (todo_set, False),
+    "todo_update": (todo_update, False),
     "list_dir": (list_dir, False),
     "read_file": (read_file, False),
     "search_text": (search_text, False),
@@ -315,6 +380,21 @@ def tool_specs() -> list[dict[str, Any]]:
         fn("user_dirs",
            "取本机真实 用户名/主目录/桌面/下载/文档 绝对路径"
            "(涉及用户目录先调它,别猜 admin)", {}, []),
+        fn("todo_set",
+           "(非简单任务用)开局列出 3-8 项待办,覆盖式重设。"
+           "每项:{id,title,status: pending|in_progress|completed}。"
+           "前端会用环形进度条展示给用户看",
+           {"items": {"type": "array",
+                       "items": {"type": "object",
+                                  "properties": {
+                                      "id": {"type": "string"},
+                                      "title": {"type": "string"},
+                                      "status": {"type": "string"}}}}},
+           ["items"]),
+        fn("todo_update",
+           "更新某条 todo 的状态;status: pending/in_progress/completed",
+           {"id": {"type": S}, "status": {"type": S}},
+           ["id", "status"]),
         fn("list_dir", "列目录", {"path": {"type": S}}, []),
         fn("read_file", "读文件", {"path": {"type": S}}, ["path"]),
         fn("search_text", "在目录内搜文本",
