@@ -18,6 +18,8 @@ export default function VpnPage() {
   const [yaml, setYaml] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  // 哪张卡的刷新在跑(用来显示行内 spinner / 禁用按钮)
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
 
   async function reload() {
     try {
@@ -66,6 +68,11 @@ export default function VpnPage() {
         管理 Clash 订阅(链接或 YAML 文件),仅服务于 API 调用,不接管整机网络。
         启用了「走 VPN」的 API 在被调用时按规则启动 mihomo 子代理。
       </div>
+      {msg && (
+        <div className="cfg-msg" style={{ marginBottom: 10 }}>
+          {msg}
+        </div>
+      )}
 
       {adding && (
         <div className="cfg-box">
@@ -164,21 +171,32 @@ export default function VpnPage() {
               <div className="prov-actions">
                 {s.url && (
                   <button
+                    disabled={refreshingId === s.id}
                     onClick={async () => {
-                      setBusy(true);
-                      setMsg("刷新中…");
+                      setRefreshingId(s.id);
+                      setMsg(`刷新「${s.name}」中…`);
                       try {
                         await refreshVpnSub(s.id);
                         await reload();
-                        setMsg("已刷新");
+                        setMsg(`✓ 已刷新「${s.name}」`);
                       } catch (e) {
-                        setMsg("刷新失败:" + (e as Error).message);
+                        setMsg(
+                          `✖ 刷新「${s.name}」失败: ` +
+                            (e as Error).message,
+                        );
                       } finally {
-                        setBusy(false);
+                        setRefreshingId(null);
                       }
                     }}
                   >
-                    刷新
+                    {refreshingId === s.id ? (
+                      <>
+                        <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2, marginRight: 4 }} />
+                        刷新中…
+                      </>
+                    ) : (
+                      "刷新"
+                    )}
                   </button>
                 )}
                 <button
