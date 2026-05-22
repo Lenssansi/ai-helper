@@ -458,7 +458,9 @@ def discover_provider_models(
                     or (prov.get("vpn_nodes") or [None])[0])
     if sub_id and node:
         import vpn
-        url, _err = vpn.ensure_proxy(sub_id, node)
+        url, err = vpn.ensure_proxy(sub_id, node)
+        if not url and err == vpn.CORE_MISSING:
+            return {"models": [], "errors": [], "core_missing": True}
         if url:
             proxy = url
     result = discover_models(req.base_url, req.api_key, proxy)
@@ -722,6 +724,8 @@ async def test_provider_node(
     import vpn
     url, err = vpn.ensure_proxy(sub_id, req.node)
     if not url:
+        if err == vpn.CORE_MISSING:
+            return {"ok": False, "core_missing": True}
         return {"ok": False, "error": err}
     import httpx
     t0 = time.perf_counter()
@@ -784,13 +788,35 @@ def provider_balance(
         import vpn
         node = (prov.get("vpn_node")
                 or (prov.get("vpn_nodes") or [None])[0])
-        url, _err = vpn.ensure_proxy(prov["vpn_sub_id"], node)
+        url, err = vpn.ensure_proxy(prov["vpn_sub_id"], node)
+        if not url and err == vpn.CORE_MISSING:
+            return {"ok": False, "supported": True,
+                    "core_missing": True, "provider_id": pid}
         if url:
             proxy = url
     out = _bal.query_balance(base_url, api_key, proxy)
     out["provider_id"] = pid
     out["via_vpn"] = bool(proxy)
     return out
+
+
+@app.get("/api/vpn/core-status")
+def vpn_core_status(caller: Caller = Depends(get_caller)) -> dict:
+    """内核是否已就位。前端据此决定是否需要弹下载提示。"""
+    _local_only(caller)
+    import vpn
+    return {"installed": vpn.core_installed()}
+
+
+@app.post("/api/vpn/install-core")
+def vpn_install_core(
+    caller: Caller = Depends(require_permission("settings")),
+) -> dict:
+    """按需下载 mihomo 内核到本机(官方源 + 镜像兜底 + SHA256 校验)。
+    仅本机:这是落地可执行文件的操作。"""
+    _local_only(caller)
+    import vpn
+    return vpn.install_core()
 
 
 @app.post("/api/vpn/subs/{sid}/test-node")
@@ -1437,7 +1463,11 @@ async def chat(
                 )
             yield _sse({"done": True})
         except ProviderError as e:
-            yield _sse({"error": str(e)})
+            # 走 VPN 但内核没装 → 发惰性信号,前端弹「按需下载组件」提示
+            if _vpn_mod.CORE_MISSING in str(e):
+                yield _sse({"core_missing": True})
+            else:
+                yield _sse({"error": str(e)})
         except Exception as e:  # noqa: BLE001
             yield _sse({"error": f"未预期错误：{e}"})
 

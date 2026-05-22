@@ -12,6 +12,7 @@ import {
   testVpnSubNode,
   upsertProvider,
   getProviderBalance,
+  notifyCoreMissing,
   type BalanceResult,
   type ProvidersState,
   type ProviderTest,
@@ -100,6 +101,7 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
     setBalLoading((m) => ({ ...m, [pid]: true }));
     try {
       const r = await getProviderBalance(pid);
+      if (r.core_missing) notifyCoreMissing();
       setBalances((m) => ({ ...m, [pid]: r }));
     } catch (e) {
       setBalances((m) => ({
@@ -737,6 +739,11 @@ export default function ApiPage({ who }: { who: WhoAmI | null }) {
                       ? draft.vpn_node || undefined
                       : undefined,
                   });
+                  if (r.core_missing) {
+                    notifyCoreMissing();
+                    setErr("自动发现需要走 VPN,但本机缺网络组件 —— 见弹窗");
+                    return;
+                  }
                   if (!r.models.length) {
                     const errs = (r.errors || []).join(" | ");
                     let hint: string;

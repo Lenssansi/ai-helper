@@ -5,6 +5,7 @@ import ApiPage from "./pages/ApiPage";
 import SettingsPage from "./pages/SettingsPage";
 import VpnPage from "./pages/VpnPage";
 import Sidebar, { type Page } from "./components/Sidebar";
+import CoreInstaller from "./components/CoreInstaller";
 import {
   deleteAgentSession,
   deleteConversation,
@@ -176,6 +177,8 @@ export default function App() {
           />
         )}
       </main>
+      {/* 全局:仅在用到走 VPN 的功能且内核缺失时才弹,平时不可见 */}
+      <CoreInstaller />
     </div>
   );
 }

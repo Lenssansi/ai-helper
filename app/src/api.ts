@@ -171,6 +171,7 @@ export interface DiscoverResp {
   models: string[];
   errors?: string[];
   via_vpn?: boolean;
+  core_missing?: boolean;
 }
 export const discoverProviderModels = (
   base_url: string,
@@ -257,6 +258,33 @@ export const updateVpnSub = (
 export const setVpnRules = (id: string, rules: VpnRule[]) =>
   sendJSON<VpnSub>(`/api/vpn/subs/${id}/rules`, "POST", { rules });
 
+// ---- VPN 内核(mihomo)按需下载 ----
+export interface CoreStatus {
+  installed: boolean;
+}
+export const getVpnCoreStatus = () =>
+  getJSON<CoreStatus>("/api/vpn/core-status");
+
+export interface CoreInstallResult {
+  ok: boolean;
+  already?: boolean;
+  version?: string;
+  path?: string;
+  error?: string;
+}
+export const installVpnCore = () =>
+  sendJSON<CoreInstallResult>("/api/vpn/install-core", "POST");
+
+/** 任何地方拿到后端的 core_missing 信号时调用 —— 全局弹「按需获取组件」提示。
+ *  用 window 事件解耦:检测方不必关心 UI,CoreInstaller 组件统一接收。 */
+export function notifyCoreMissing(): void {
+  try {
+    window.dispatchEvent(new CustomEvent("aih-core-missing"));
+  } catch {
+    /* 无 window 环境忽略 */
+  }
+}
+
 export interface VpnPreview {
   id: string;
   name: string;
@@ -321,6 +349,7 @@ export interface BalanceResult {
   error?: string;
   via_vpn?: boolean;
   provider_id?: string;
+  core_missing?: boolean;
 }
 export const getProviderBalance = (provider_id: string) =>
   getJSON<BalanceResult>(`/api/providers/${provider_id}/balance`);
@@ -632,6 +661,14 @@ export function streamChat(
           const line = part.trim();
           if (!line.startsWith("data:")) continue;
           const obj = JSON.parse(line.slice(5).trim());
+          if (obj.core_missing) {
+            notifyCoreMissing();
+            cb.onError(
+              "该 API 走 VPN,但本机还缺一个网络代理组件 —— " +
+                "请在弹出的提示里获取后重试。",
+            );
+            return;
+          }
           if (obj.error) {
             cb.onError(obj.error);
             return;

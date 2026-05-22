@@ -40,6 +40,9 @@ class OpenAICompatProvider:
         import vpn
         url, err = vpn.ensure_proxy(self.vpn_sub_id, self.vpn_node)
         if not url:
+            # 内核缺失:原样抛 sentinel,让上层(/api/chat)识别后弹惰性下载提示
+            if err == vpn.CORE_MISSING:
+                raise ProviderError(vpn.CORE_MISSING)
             raise ProviderError(f"VPN 启动失败: {err}")
         return url
 

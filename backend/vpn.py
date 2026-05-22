@@ -43,6 +43,33 @@ _PORT_END = 7999
 _INSTANCES: dict[str, dict[str, Any]] = {}
 _LOCK = threading.Lock()
 
+# ensure_proxy 在「内核没装」时返回这个 sentinel(而不是一长串说明)。
+# 上层据此识别:不是普通错误,而是「该按需下载内核组件了」,前端弹惰性提示。
+CORE_MISSING = "__MIHOMO_CORE_MISSING__"
+
+# ---- 内核按需下载 ----
+# 设计:ai-helper 本体绝不打包 mihomo。用户真正用到走 VPN 的功能、且内核
+# 恰好缺失时,才在「他自己的机器上」从 mihomo 官方 GitHub 下载。下载源锁死
+# 官方域名 + https,且对下载到的字节做 SHA256 校验(下方 _CORE_SHA256),
+# 任何镜像/中间人篡改都会被这一步挡下。校验通过才落地、再 `-v` 实跑确认。
+_CORE_VERSION = "v1.19.25"
+_CORE_ASSET = f"mihomo-windows-amd64-compatible-{_CORE_VERSION}.zip"
+# 该 zip 的官方 SHA256(2026-05 核对 v1.19.25);换版本必须同步更新
+_CORE_SHA256 = (
+    "e4bc371cd449028e65e7f8b4d63b1ac4cdfa3cd008f05af5d42a77d63935f94b"
+)
+_CORE_GH = (
+    "https://github.com/MetaCubeX/mihomo/releases/download/"
+    f"{_CORE_VERSION}/{_CORE_ASSET}"
+)
+# 官方直连优先;连不上(国内常见)→ GitHub 加速镜像兜底。
+# 无论走哪条,下载字节都要过 _CORE_SHA256 校验,镜像不可信也无妨。
+_CORE_SOURCES = [
+    _CORE_GH,
+    f"https://gh-proxy.com/{_CORE_GH}",
+    f"https://ghproxy.net/{_CORE_GH}",
+]
+
 
 def find_mihomo_exe() -> str | None:
     for name in MIHOMO_EXE_CANDIDATES:
@@ -128,11 +155,8 @@ def ensure_proxy(sub_id: str, node: str) -> tuple[str | None, str]:
 
         exe = find_mihomo_exe()
         if not exe:
-            return None, (
-                f"未找到 mihomo 二进制。请把 mihomo.exe 放到 {MIHOMO_DIR}"
-                "(或将其加入 PATH)。可去 https://github.com/MetaCubeX/mihomo "
-                "下载对应平台的 release。"
-            )
+            # 不返回长说明 —— 返回 sentinel,让上层弹「按需下载内核」惰性提示
+            return None, CORE_MISSING
 
         sub = vpn_store.get_sub_internal(sub_id)
         if not sub:
@@ -195,6 +219,99 @@ def shutdown_all() -> None:
             except OSError:
                 pass
         _INSTANCES.clear()
+
+
+def core_installed() -> bool:
+    """内核是否已就位。"""
+    return find_mihomo_exe() is not None
+
+
+def install_core() -> dict[str, Any]:
+    """按需把 mihomo 内核下到 MIHOMO_DIR。返回 {ok, version?, path?, error?}。
+
+    安全:下载源锁死官方 GitHub(+ 加速镜像);下载到的字节先过 SHA256
+    校验(_CORE_SHA256),再解压、落地、`-v` 实跑确认。任何环节不通过都
+    不留文件。"""
+    import hashlib
+    import io
+    import zipfile
+
+    if core_installed():
+        return {"ok": True, "already": True, "path": find_mihomo_exe()}
+
+    try:
+        MIHOMO_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return {"ok": False, "error": f"无法创建目录 {MIHOMO_DIR}:{e}"}
+
+    import httpx
+    data: bytes | None = None
+    last_err = ""
+    for src in _CORE_SOURCES:
+        try:
+            with httpx.Client(
+                timeout=httpx.Timeout(180.0, connect=20.0),
+                follow_redirects=True,
+            ) as c:
+                r = c.get(src)
+            if r.status_code == 200 and r.content:
+                data = r.content
+                break
+            last_err = f"HTTP {r.status_code}"
+        except httpx.HTTPError as e:  # noqa: PERF203
+            last_err = f"{type(e).__name__}"
+            continue
+    if not data:
+        return {"ok": False,
+                "error": f"下载失败({last_err})。换个网络后重试。"}
+
+    # SHA256 校验 —— 镜像/中间人篡改在此被挡下
+    got = hashlib.sha256(data).hexdigest().lower()
+    if got != _CORE_SHA256:
+        return {"ok": False,
+                "error": "下载文件校验未通过(哈希不符),已丢弃。"
+                         "可能下载源不可信或文件损坏。"}
+
+    # 解压取 exe
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        return {"ok": False, "error": "下载内容不是有效压缩包"}
+    exe_member = next(
+        (n for n in zf.namelist() if n.lower().endswith(".exe")), None
+    )
+    if not exe_member:
+        return {"ok": False, "error": "压缩包内未找到可执行文件"}
+
+    target = MIHOMO_DIR / "mihomo.exe"
+    try:
+        with zf.open(exe_member) as fsrc, open(target, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+    except OSError as e:
+        return {"ok": False, "error": f"写入失败:{e}"}
+
+    # 实跑 `-v` 确认是能用的真内核
+    try:
+        r = subprocess.run(
+            [str(target), "-v"], capture_output=True, text=True,
+            timeout=10, errors="replace",
+            creationflags=(0x08000000 if os.name == "nt" else 0),
+        )
+        ver = ((r.stdout or "") + (r.stderr or "")).strip()
+    except Exception as e:  # noqa: BLE001
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        return {"ok": False, "error": f"内核无法运行:{e}"}
+    low = ver.lower()
+    if "mihomo" not in low and "meta" not in low:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        return {"ok": False, "error": "内核自检未通过,已删除"}
+    return {"ok": True, "path": str(target), "version": ver[:160]}
 
 
 def status() -> list[dict[str, Any]]:
