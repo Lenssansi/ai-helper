@@ -808,15 +808,81 @@ def vpn_core_status(caller: Caller = Depends(get_caller)) -> dict:
     return {"installed": vpn.core_installed()}
 
 
+class CoreInstallReq(BaseModel):
+    force: bool = False  # True=即使已装也重装(用于「更新内核」)
+
+
 @app.post("/api/vpn/install-core")
 def vpn_install_core(
+    body: CoreInstallReq | None = None,
     caller: Caller = Depends(require_permission("settings")),
 ) -> dict:
     """按需下载 mihomo 内核到本机(官方源 + 镜像兜底 + SHA256 校验)。
-    仅本机:这是落地可执行文件的操作。"""
+    force=True 重装(更新)。仅本机:这是落地可执行文件的操作。"""
     _local_only(caller)
     import vpn
-    return vpn.install_core()
+    return vpn.install_core(force=bool(body and body.force))
+
+
+@app.get("/api/components")
+async def components_status(
+    caller: Caller = Depends(get_caller),
+) -> dict:
+    """统一返回 ai-helper 用到的可更新外部组件状态,供设置页「组件与
+    更新」面板渲染。仅本机(涉及 mihomo/git 等本机组件)。"""
+    _local_only(caller)
+    import shutil
+    import subprocess
+    import vpn
+
+    # mihomo 内核
+    mihomo = {
+        "installed": vpn.core_installed(),
+        "version": vpn.core_version(),
+        "bundled": vpn.bundled_core_version(),
+    }
+    mihomo["updatable"] = (
+        mihomo["installed"]
+        and mihomo["version"]
+        and mihomo["bundled"] not in mihomo["version"]
+    )
+
+    # 工程 skills
+    sk = skills_status(get_skills_enabled())
+    skills_info = {
+        "installed": bool(sk.get("cloned")),
+        "count": sk.get("count", 0),
+        "enabled": bool(sk.get("enabled")),
+    }
+
+    # Git(系统软件,只读状态)
+    gp = shutil.which("git")
+    git_info: dict = {"installed": bool(gp)}
+    if gp:
+        try:
+            r = subprocess.run([gp, "--version"], capture_output=True,
+                               text=True, timeout=5, errors="replace")
+            git_info["version"] = (r.stdout or "").strip()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Ollama(系统软件,只读状态)
+    ollama_info: dict = {"installed": False}
+    try:
+        st = await ollama_status()
+        ollama_info = {
+            "installed": bool(st.get("reachable")),
+            "models": len(st.get("models", []) or []),
+        }
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {
+        "mihomo": mihomo,
+        "skills": skills_info,
+        "git": git_info,
+        "ollama": ollama_info,
+    }
 
 
 @app.post("/api/vpn/subs/{sid}/test-node")

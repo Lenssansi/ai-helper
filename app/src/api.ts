@@ -272,8 +272,24 @@ export interface CoreInstallResult {
   path?: string;
   error?: string;
 }
-export const installVpnCore = () =>
-  sendJSON<CoreInstallResult>("/api/vpn/install-core", "POST");
+/** force=true 即使已装也重装(用于「更新内核」)。 */
+export const installVpnCore = (force = false) =>
+  sendJSON<CoreInstallResult>("/api/vpn/install-core", "POST", { force });
+
+// ---- 组件与更新 ----
+export interface ComponentsStatus {
+  mihomo: {
+    installed: boolean;
+    version: string;
+    bundled: string;
+    updatable: boolean;
+  };
+  skills: { installed: boolean; count: number; enabled: boolean };
+  git: { installed: boolean; version?: string };
+  ollama: { installed: boolean; models?: number };
+}
+export const getComponents = () =>
+  getJSON<ComponentsStatus>("/api/components");
 
 /** 任何地方拿到后端的 core_missing 信号时调用 —— 全局弹「按需获取组件」提示。
  *  用 window 事件解耦:检测方不必关心 UI,CoreInstaller 组件统一接收。 */

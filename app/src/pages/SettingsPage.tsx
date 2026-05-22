@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import ComponentsPanel from "../components/ComponentsPanel";
 import {
   getBrain,
   getOllamaStatus,
@@ -27,7 +28,6 @@ import {
   saveBrain,
   saveWorkspace,
   setSkills,
-  updateSkills,
   setSystemPrompt as apiSetSysPrompt,
   setTheme as apiSetTheme,
   getConfirmLevel,
@@ -766,12 +766,15 @@ export default function SettingsPage({
         <div className="cfg-msg">{wsMsg}</div>
       </section>
 
+      <ComponentsPanel canSettings={canSettings} />
+
       <section className="set-block">
         <div className="set-title">编程 skills（仅「编程」页生效）</div>
         <div className="muted" style={{ marginBottom: 8 }}>
           来自 mattpocock/skills 的工程实践，含「需求盘问」——开启后编程
           Agent 动手前会先追问澄清不清的需求，避免瞎猜生成错代码。
           只注入到「编程」页，普通对话/文件模式不受影响。
+          （克隆/更新 skills 在上方「组件与更新」面板。）
         </div>
         {sk && (
           <div className="toggles">
@@ -793,27 +796,10 @@ export default function SettingsPage({
             />
             {!sk.cloned && (
               <div className="cfg-note warn">
-                未检测到 skills 仓库，点下方「更新」克隆。
+                未检测到 skills 仓库，到上方「组件与更新」面板点「克隆」。
               </div>
             )}
-            {canSettings && (
-              <div className="cfg-actions" style={{ marginTop: 6 }}>
-                <button
-                  onClick={async () => {
-                    setSkMsg("更新中…");
-                    try {
-                      setSk(await updateSkills());
-                      setSkMsg("已更新到最新");
-                    } catch (e) {
-                      setSkMsg((e as Error).message);
-                    }
-                  }}
-                >
-                  更新 skills（重新克隆上游）
-                </button>
-                <span className="cfg-msg">{skMsg}</span>
-              </div>
-            )}
+            {skMsg && <span className="cfg-msg">{skMsg}</span>}
             <div className="muted" style={{ marginTop: 6 }}>
               已加载：{sk.skills.join("、") || "（无）"}
             </div>

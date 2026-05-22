@@ -226,8 +226,32 @@ def core_installed() -> bool:
     return find_mihomo_exe() is not None
 
 
-def install_core() -> dict[str, Any]:
+def core_version() -> str:
+    """跑 `mihomo -v` 取版本字符串(如 'v1.19.25');取不到返 ''。"""
+    exe = find_mihomo_exe()
+    if not exe:
+        return ""
+    try:
+        r = subprocess.run(
+            [exe, "-v"], capture_output=True, text=True, timeout=8,
+            errors="replace",
+            creationflags=(0x08000000 if os.name == "nt" else 0),
+        )
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
+    except Exception:  # noqa: BLE001
+        return ""
+    m = re.search(r"v?\d+\.\d+\.\d+", out)
+    return m.group(0) if m else (out[:40] if out else "")
+
+
+def bundled_core_version() -> str:
+    """ai-helper 内置(=目标)的 mihomo 版本。"""
+    return _CORE_VERSION
+
+
+def install_core(force: bool = False) -> dict[str, Any]:
     """按需把 mihomo 内核下到 MIHOMO_DIR。返回 {ok, version?, path?, error?}。
+    force=True 时即使已装也重新下载(用于「更新/重装」)。
 
     安全:下载源锁死官方 GitHub(+ 加速镜像);下载到的字节先过 SHA256
     校验(_CORE_SHA256),再解压、落地、`-v` 实跑确认。任何环节不通过都
@@ -236,8 +260,9 @@ def install_core() -> dict[str, Any]:
     import io
     import zipfile
 
-    if core_installed():
-        return {"ok": True, "already": True, "path": find_mihomo_exe()}
+    if core_installed() and not force:
+        return {"ok": True, "already": True, "path": find_mihomo_exe(),
+                "version": core_version()}
 
     try:
         MIHOMO_DIR.mkdir(parents=True, exist_ok=True)
