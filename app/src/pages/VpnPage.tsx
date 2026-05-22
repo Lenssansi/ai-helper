@@ -428,6 +428,10 @@ export default function VpnPage() {
                   flexDirection: "column",
                   gap: 4,
                   overflow: "auto",
+                  // 在固定高度的弹窗里占满剩余空间并内部滚动,
+                  // 否则节点多时会把下方原始内容挤出弹窗、且无滚动条
+                  flex: 1,
+                  minHeight: 0,
                 }}
               >
                 {preview.nodes.map((n, i) => (

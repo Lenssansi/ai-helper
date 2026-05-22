@@ -88,14 +88,24 @@ def _extract_node_dict(yaml_text: str, node_name: str) -> dict | None:
 def _build_config(http_port: int, node_dict: dict) -> str:
     """生成最小可用的 mihomo 配置:仅 HTTP 入站,出站固定到指定节点。
     用 PyYAML dump 保证缩进/转义正确,顺便补 client-fingerprint 等
-    新协议必填项(由 node_dict 自带)。"""
+    新协议必填项(由 node_dict 自带)。
+
+    安全关键:
+    - bind-address: 127.0.0.1 + allow-lan: false —— 子代理端口只对本机
+      监听。绝不能让局域网/外网用上这个代理(否则就成了「开放代理」,既
+      可能被陌生人蹭来翻墙,也让你在法律上从「自用」滑向「为他人提供
+      代理服务」)。本软件的定位是「仅服务本机 API 调用」,这两行是底线。
+    - external-controller: "" —— 关掉 mihomo 的 RESTful 控制接口,
+      不暴露任何可远程操控 mihomo 的端口。"""
     import yaml as _yaml
     name = str(node_dict.get("name", "PROXY_NODE"))
     cfg_obj: dict[str, Any] = {
         "mixed-port": http_port,
+        "bind-address": "127.0.0.1",  # 子代理仅本机可用
+        "allow-lan": False,           # 绝不对局域网开放
         "mode": "rule",
         "log-level": "silent",
-        "external-controller": "",
+        "external-controller": "",    # 关闭 mihomo 控制接口
         "proxies": [node_dict],
         "rules": [f"MATCH,{name}"],
     }

@@ -44,19 +44,30 @@ body {
   color: var(--text);
 }
 
+/* 滚动条统一主题:Chromium(Electron)走 ::-webkit-*;
+   Firefox / 远程浏览器走 scrollbar-width / scrollbar-color。
+   两者都是「内容溢出才出现」的 auto 语义,不会常驻占位。 */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--bg);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--border-2);
   border-radius: 6px;
+  border: 2px solid var(--bg);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--border-2);
+  background: var(--muted);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
 }
 
 .app {
@@ -304,6 +315,11 @@ body {
   flex-direction: column;
   gap: 4px;
   margin: 4px 0;
+  /* 节点可能几十上百个 —— 超过约 7 行就内部滚动,不撑爆整个表单。
+     max-height 用 vh 跟随窗口大小,内容没超时不会出现滚动条。 */
+  max-height: 46vh;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 .node-row {
   display: grid;

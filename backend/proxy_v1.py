@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from typing import Any, AsyncIterator
 
 import httpx
@@ -26,15 +27,26 @@ from config import (
     resolve_choice,
 )
 
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
 
 def _check_auth(request: Request) -> None:
     if not get_proxy_enabled():
         raise HTTPException(status_code=503, detail="本地 API 代理已关闭")
+    # /v1/* 不经过 get_caller,这里自行执行远程门禁:
+    # 远程未开启时,非本机一律拒(即使带对的 proxy key 也不行)。
+    client_host = request.client.host if request.client else ""
+    if client_host not in _LOOPBACK:
+        if not load_settings().get("remote_enabled", False):
+            raise HTTPException(status_code=403,
+                                detail="远程访问未开启(本地 API 代理仅本机)")
     key = get_proxy_key()
     if not key:
         raise HTTPException(status_code=500, detail="proxy_api_key 未初始化")
     auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {key}":
+    expected = f"Bearer {key}"
+    # 常量时间比较,杜绝 timing 爆破
+    if not secrets.compare_digest(auth, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 

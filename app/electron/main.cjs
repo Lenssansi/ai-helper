@@ -7,13 +7,22 @@ const {
   dialog,
   nativeTheme,
   ipcMain,
+  session,
 } = require("electron");
 const path = require("path");
 const http = require("http");
 const fs = require("fs");
+const crypto = require("crypto");
 const { spawn } = require("child_process");
 
 const PACKED = app.isPackaged;
+
+// CSRF 防护:本进程随机生成一个 shell 令牌。
+// - 启动后端时通过环境变量 AIH_SHELL_TOKEN 传给它
+// - 给所有发往后端(127.0.0.1:8756)的请求注入 X-AIH-Shell 头
+// 后端据此识别「请求确实来自 ai-helper 外壳」,而浏览器里的恶意网页
+// 拿不到这个令牌、也无法经过本 session 注入 → 无法伪造。
+const SHELL_TOKEN = crypto.randomBytes(24).toString("hex");
 const ROOT = path.join(__dirname, "..", ".."); // dev: D:\ai-helper
 const APP_DIR = path.join(ROOT, "app");
 const BACKEND_DIR = path.join(ROOT, "backend");
@@ -74,12 +83,15 @@ async function ensureOllama() {
 
 async function ensureBackend() {
   if (await httpOk("http://127.0.0.1:8756/api/health")) return;
+  // 把 shell 令牌通过环境变量交给后端,供 CSRF 校验
+  const backendEnv = { ...process.env, AIH_SHELL_TOKEN: SHELL_TOKEN };
   if (PACKED) {
     if (!fs.existsSync(BACKEND_EXE)) return;
     backendProc = spawn(BACKEND_EXE, [], {
       cwd: path.dirname(BACKEND_EXE),
       stdio: "ignore",
       windowsHide: true,
+      env: backendEnv,
     });
   } else {
     if (!fs.existsSync(PY)) return; // 没装依赖：前端显示后端未连接
@@ -87,6 +99,7 @@ async function ensureBackend() {
       cwd: BACKEND_DIR,
       stdio: "ignore",
       windowsHide: true,
+      env: backendEnv,
     });
   }
   backendProc.on("error", () => (backendProc = null));
@@ -187,6 +200,19 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // 给所有发往本地后端的请求注入 shell 令牌(在拉起后端/开窗之前装好)
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    {
+      urls: [
+        "http://127.0.0.1:8756/*",
+        "http://localhost:8756/*",
+      ],
+    },
+    (details, cb) => {
+      details.requestHeaders["X-AIH-Shell"] = SHELL_TOKEN;
+      cb({ requestHeaders: details.requestHeaders });
+    },
+  );
   await Promise.all([ensureOllama(), ensureBackend(), ensureVite()]);
   // 开窗前必须同时等到后端 + (dev 模式下) Vite 就绪，否则窗口已开但
   // 后端还没起，前端会立刻报「后端未连接」。两个 wait 并行不串行。

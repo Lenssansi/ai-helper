@@ -11,16 +11,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import secrets
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from config import (
@@ -94,6 +97,66 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ===== CSRF 防护 =====
+# 后端绑 127.0.0.1，任何本机浏览器里的恶意网页都能 fetch 本接口。
+# CORS 只挡「读响应」，挡不住「请求被执行」——所以一个 evil.com 页面能
+# 静默 POST /api/git/install 等高危接口造成 RCE。这里在中间件层把关:
+# 状态变更请求(POST/PUT/PATCH/DELETE)必须来自可信来源,否则 403。
+#
+# 放行判定(任一成立):
+#  1. 带 Electron 外壳注入的 X-AIH-Shell 令牌(app 自身请求,启动时由
+#     Electron 主进程通过 onBeforeSendHeaders 注入,网页伪造不了)
+#  2. Origin 与本服务同源(Origin 的 host:port == Host 头)
+#  3. Origin 是开发期 Vite(5173)
+#  4. 无 Origin 且非浏览器跨站(curl/Cline 等原生客户端,本就不是 CSRF 媒介)
+_SHELL_TOKEN = os.environ.get("AIH_SHELL_TOKEN", "")
+_CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+_CSRF_DEV_ORIGINS = {
+    "http://localhost:5173", "http://127.0.0.1:5173",
+}
+
+
+def _csrf_ok(request: Request) -> bool:
+    # 1) Electron 外壳令牌
+    if _SHELL_TOKEN:
+        tok = request.headers.get("X-AIH-Shell", "")
+        if tok and secrets.compare_digest(tok, _SHELL_TOKEN):
+            return True
+    origin = request.headers.get("origin")
+    if origin:
+        if origin in _CSRF_DEV_ORIGINS:
+            return True
+        try:
+            o_netloc = (urlparse(origin).netloc or "").lower()
+        except ValueError:
+            return False
+        host = (request.headers.get("host") or "").lower()
+        # 同源:Origin 的 host:port 与本服务 Host 一致(远程 LAN IP 也适用)
+        if o_netloc and host and o_netloc == host:
+            return True
+        return False  # 有 Origin 但跨站 → 拒
+    # 无 Origin:浏览器对跨源写请求一定带 Origin;没有 = 原生客户端。
+    # 再用 Sec-Fetch-Site 兜底:浏览器强制设置,JS 无法伪造。
+    sfs = (request.headers.get("sec-fetch-site") or "").lower()
+    if sfs == "cross-site":
+        return False
+    return True
+
+
+@app.middleware("http")
+async def csrf_guard(request: Request, call_next):
+    path = request.url.path
+    if (path.startswith("/api/")
+            and request.method.upper() not in _CSRF_SAFE_METHODS
+            and not _csrf_ok(request)):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "CSRF 校验失败:请求来源不可信。"
+                     "请通过 ai-helper 本体或同源页面访问。"},
+        )
+    return await call_next(request)
 
 
 @app.get("/api/health")
@@ -356,13 +419,15 @@ def post_active(
 @app.post("/api/providers/discover")
 def discover_provider_models(
     req: ProviderDiscoverReq,
-    caller: Caller = Depends(get_caller),  # noqa: ARG001
+    caller: Caller = Depends(get_caller),
 ) -> dict:
     """给前端「自动发现模型」按钮:探测 base_url 的可用模型列表。
     走 VPN 的优先级:
       ① req.vpn_sub_id + req.vpn_node(草稿态直传,不需 provider 已保存)
       ② provider_id 已保存且开了 VPN → 用其 vpn_sub_id + 活跃/候选节点
-    其余情况直连。"""
+    其余情况直连。
+    仅本机:本端点会对任意 base_url 发起请求(SSRF 面),远程不开放。"""
+    _local_only(caller)
     from config import _find, discover_models, load_settings
 
     proxy: str | None = None
@@ -511,7 +576,9 @@ class NodeTestReq(BaseModel):
 # ---------- VPN 订阅 ----------
 
 @app.get("/api/vpn/subs")
-def vpn_list(caller: Caller = Depends(get_caller)) -> list:  # noqa: ARG001
+def vpn_list(caller: Caller = Depends(get_caller)) -> list:
+    # VPN 涉及代理凭证 + 本机子进程,整组功能仅本机可用
+    _local_only(caller)
     import vpn_store
     return vpn_store.list_subs()
 
@@ -576,9 +643,11 @@ def vpn_refresh(
 @app.get("/api/vpn/subs/{sid}/preview")
 def vpn_preview(
     sid: str,
-    caller: Caller = Depends(get_caller),  # noqa: ARG001
+    caller: Caller = Depends(get_caller),
 ) -> dict:
-    """订阅内容预览:实时再解析一次给出节点列表 + 格式诊断 + 头部样本。"""
+    """订阅内容预览:实时再解析一次给出节点列表 + 格式诊断 + 头部样本。
+    raw_head 含订阅明文(可能有节点 server/密码),严格仅本机。"""
+    _local_only(caller)
     import vpn_store
     s = vpn_store.get_sub_internal(sid)
     if not s:
@@ -615,10 +684,12 @@ def vpn_set_rules(
 @app.post("/api/providers/test-node")
 async def test_provider_node(
     req: NodeTestReq,
-    caller: Caller = Depends(require_permission("api_switch")),  # noqa: ARG001
+    caller: Caller = Depends(get_caller),
 ) -> dict:
     """测 provider 候选节点的延迟,默认走轻量 TCP(不依赖 mihomo)。
-    req.target 给了就走重的:启 mihomo + HEAD 该 URL,验证整条代理链。"""
+    req.target 给了就走重的:启 mihomo + HEAD 该 URL,验证整条代理链。
+    仅本机:涉及 VPN 节点 + 任意 target 请求。"""
+    _local_only(caller)
     from config import (
         _find,
         load_settings,
@@ -672,9 +743,10 @@ async def test_provider_node(
 @app.post("/api/vpn/subs/{sid}/test-all")
 def vpn_test_all(
     sid: str,
-    caller: Caller = Depends(get_caller),  # noqa: ARG001
+    caller: Caller = Depends(get_caller),
 ) -> dict:
     """订阅级:并发 TCP 测全部节点,返回结果列表(不写回 provider)。"""
+    _local_only(caller)
     import vpn_store
     try:
         results = vpn_store.test_sub_all(sid)
@@ -691,11 +763,12 @@ class VpnSubNodeTest(BaseModel):
 @app.get("/api/providers/{pid}/balance")
 def provider_balance(
     pid: str,
-    caller: Caller = Depends(get_caller),  # noqa: ARG001
+    caller: Caller = Depends(get_caller),
 ) -> dict:
     """查 provider 余量。已知支持:DeepSeek / OpenRouter / Moonshot /
     SiliconFlow。不支持的 host 返 {supported: False}。
-    走该 provider 的 VPN(若开启)。"""
+    走该 provider 的 VPN(若开启)。仅本机:会用到 api_key + 启 mihomo。"""
+    _local_only(caller)
     from config import _find, load_settings
     import balance as _bal
     s = load_settings()
@@ -724,10 +797,11 @@ def provider_balance(
 def vpn_test_node(
     sid: str,
     body: VpnSubNodeTest,
-    caller: Caller = Depends(get_caller),  # noqa: ARG001
+    caller: Caller = Depends(get_caller),
 ) -> dict:
     """订阅级:测单个节点 TCP 延迟。不需要 provider 已保存或绑订阅,
     ApiPage 在草稿状态下也能用 draft.vpn_sub_id 触发。"""
+    _local_only(caller)
     import vpn_store
     return vpn_store.test_sub_node(sid, body.node)
 
@@ -735,9 +809,10 @@ def vpn_test_node(
 @app.post("/api/providers/{pid}/test-nodes-all")
 def provider_test_nodes_all(
     pid: str,
-    caller: Caller = Depends(require_permission("api_switch")),  # noqa: ARG001
+    caller: Caller = Depends(get_caller),
 ) -> dict:
     """provider 候选节点全测(TCP),结果落到 provider.vpn_node_latency。"""
+    _local_only(caller)
     from config import _find, load_settings, set_provider_node_latency
     import vpn_store
     s = load_settings()
@@ -791,8 +866,12 @@ async def git_install(
     caller: Caller = Depends(require_permission("settings")),
 ) -> dict:
     _local_only(caller)
-    if not req.url.strip():
+    url = req.url.strip()
+    if not url:
         return {"ok": False, "error": "缺少下载链接"}
+    # 只允许 https —— 安装包要落地执行,绝不能走可被中间人篡改的 http
+    if not url.lower().startswith("https://"):
+        return {"ok": False, "error": "下载链接必须是 https://(不接受 http)"}
     import shutil
     import subprocess
 
@@ -801,8 +880,10 @@ async def git_install(
         tmp_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         return {"ok": False, "error": f"无法建临时目录:{e}"}
-    fn = (req.url.rsplit("/", 1)[-1].split("?")[0]
+    fn = (url.rsplit("/", 1)[-1].split("?")[0]
           or "git-installer.exe")
+    # 文件名只留安全字符,杜绝路径穿越(如 ..\\..\\evil.exe)
+    fn = re.sub(r"[^A-Za-z0-9._-]", "_", fn) or "git-installer.exe"
     target = tmp_dir / fn
     try:
         import httpx
@@ -810,7 +891,7 @@ async def git_install(
             timeout=httpx.Timeout(600.0, connect=30.0),
             follow_redirects=True,
         ) as c:
-            async with c.stream("GET", req.url) as resp:
+            async with c.stream("GET", url) as resp:
                 if resp.status_code != 200:
                     return {"ok": False,
                             "error": f"下载失败 HTTP {resp.status_code}"}
