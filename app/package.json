@@ -31,7 +31,14 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "perMachine": false
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false,
+      "differentialPackage": false,
+      "installerLanguages": ["zh_CN", "en_US"],
+      "menuCategory": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "ai-helper"
     }
   },
   "dependencies": {

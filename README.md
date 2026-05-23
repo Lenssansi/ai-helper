@@ -12,6 +12,9 @@
 1. 下载 `release/v0.0.5/ai-helper Setup 0.0.5.exe` 双击安装(NSIS,无需 Python/Node)
 2. 桌面快捷方式启动;首次启动自动拉起内置后端 `127.0.0.1:8756`
 3. 用户数据落 `%APPDATA%/ai-helper/`(API key / 对话历史 / VPN 订阅)
+4. **升级覆盖**:已装老版直接双击新 Setup 即可。安装器自动卸载旧版后安装新版,
+   `%APPDATA%/ai-helper/` 里的全部配置(API key / 对话 / VPN 订阅 / 搜索 key 等)
+   **保留不动**,新版启动后自动迁移老 schema,无需重新配置。
 
 ### 配置一个 API(以国内 DeepSeek 为例)
 
