@@ -550,6 +550,10 @@ class SearchPatch(BaseModel):
     provider: str | None = None
     api_key: str | None = None  # ""=不改;"__clear__"=清空
     max_results: int | None = None
+    # 复用本软件的 VPN(避免国内访问 Tavily 还要单独开 Clash)
+    use_vpn: bool | None = None
+    vpn_sub_id: str | None = None
+    vpn_node: str | None = None
 
 
 class SearchTestReq(BaseModel):

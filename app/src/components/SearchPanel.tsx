@@ -4,7 +4,10 @@ import { useEffect, useState } from "react";
 import {
   type SearchCfg,
   type SearchTestResult,
+  type VpnSub,
   getSearchCfg,
+  listVpnSubs,
+  notifyCoreMissing,
   saveSearchCfg,
   testSearch,
 } from "../api";
@@ -19,6 +22,7 @@ export default function SearchPanel({
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<SearchTestResult | null>(null);
   const [msg, setMsg] = useState("");
+  const [subs, setSubs] = useState<VpnSub[]>([]);
 
   async function reload() {
     try {
@@ -29,6 +33,7 @@ export default function SearchPanel({
   }
   useEffect(() => {
     reload();
+    listVpnSubs().then(setSubs).catch(() => setSubs([]));
   }, []);
 
   async function save(patch: Parameters<typeof saveSearchCfg>[0]) {
@@ -46,7 +51,9 @@ export default function SearchPanel({
     setResult(null);
     setMsg("");
     try {
-      setResult(await testSearch("ai-helper 是什么"));
+      const r = await testSearch("ai-helper 是什么");
+      setResult(r);
+      if (r.core_missing) notifyCoreMissing();
     } catch (e) {
       setMsg("测试失败:" + (e as Error).message);
     } finally {
@@ -136,6 +143,108 @@ export default function SearchPanel({
             style={{ width: 80 }}
           />
         </label>
+
+        {cfg.provider !== "off" && (
+          <div
+            style={{
+              marginTop: 4,
+              padding: 8,
+              border: "1px solid var(--border-2)",
+              borderRadius: 6,
+              background: "var(--bg)",
+            }}
+          >
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                cursor: canSettings ? "pointer" : "default",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={!!cfg.use_vpn}
+                disabled={!canSettings}
+                onChange={(e) =>
+                  save({ use_vpn: e.target.checked })
+                }
+              />
+              <strong style={{ fontSize: 13 }}>走 VPN 调用</strong>
+              <span className="muted" style={{ fontSize: 11 }}>
+                (复用 ai-helper 内的 VPN —— Tavily 在国内通常需代理)
+              </span>
+            </label>
+            {cfg.use_vpn && (
+              <div
+                style={{
+                  marginTop: 6,
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                }}
+              >
+                <label
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 2,
+                    flex: "1 1 180px",
+                  }}
+                >
+                  <span className="muted" style={{ fontSize: 11 }}>
+                    订阅
+                  </span>
+                  <select
+                    value={cfg.vpn_sub_id || ""}
+                    disabled={!canSettings}
+                    onChange={(e) =>
+                      save({ vpn_sub_id: e.target.value, vpn_node: "" })
+                    }
+                  >
+                    <option value="">— 选 —</option>
+                    {subs.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 2,
+                    flex: "1 1 180px",
+                  }}
+                >
+                  <span className="muted" style={{ fontSize: 11 }}>
+                    节点
+                  </span>
+                  <select
+                    value={cfg.vpn_node || ""}
+                    disabled={!canSettings || !cfg.vpn_sub_id}
+                    onChange={(e) => save({ vpn_node: e.target.value })}
+                  >
+                    <option value="">— 选 —</option>
+                    {(
+                      subs.find((s) => s.id === cfg.vpn_sub_id)?.nodes || []
+                    ).map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {subs.length === 0 && (
+                  <div className="muted" style={{ fontSize: 11 }}>
+                    没有可用 VPN 订阅,先去「VPN 订阅」页加一个
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="cfg-actions" style={{ marginTop: 10 }}>
@@ -163,6 +272,11 @@ export default function SearchPanel({
             {result.ok ? (
               <span style={{ color: "#2f9e44" }}>
                 ✓ 通过 · {result.provider} · 返回 {result.count} 条
+                {result.via_vpn && (
+                  <span className="badge" style={{ marginLeft: 6, fontSize: 10 }}>
+                    走 VPN
+                  </span>
+                )}
               </span>
             ) : (
               <span style={{ color: "#c92a2a" }}>

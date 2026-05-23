@@ -623,10 +623,15 @@ export interface SearchCfg {
   provider: string;
   api_key_set: boolean;
   max_results: number;
+  use_vpn?: boolean;
+  vpn_sub_id?: string;
+  vpn_node?: string;
 }
 export interface SearchTestResult {
   ok: boolean;
   provider: string;
+  via_vpn?: boolean;
+  core_missing?: boolean;
   count?: number;
   results?: { title: string; snippet: string; url: string }[];
   error?: string;
@@ -636,6 +641,9 @@ export const saveSearchCfg = (patch: {
   provider?: string;
   api_key?: string; // ""=不改;"__clear__"=清空;其它=设新值
   max_results?: number;
+  use_vpn?: boolean;
+  vpn_sub_id?: string;
+  vpn_node?: string;
 }) => sendJSON<SearchCfg>("/api/search", "POST", patch);
 export const testSearch = (query = "ping") =>
   sendJSON<SearchTestResult>("/api/search/test", "POST", { query });

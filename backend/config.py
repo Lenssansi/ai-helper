@@ -91,6 +91,10 @@ DEFAULTS: dict[str, Any] = {
         "provider": "tavily",  # tavily | off
         "api_key": "",
         "max_results": 5,
+        # 复用本软件内的 VPN(避免国内访问 Tavily 还要单独开 Clash)
+        "use_vpn": False,
+        "vpn_sub_id": "",
+        "vpn_node": "",
     },
     "brain": {
         "auto_route": True,    # 本地模型自动选 API
@@ -822,6 +826,9 @@ def get_search() -> dict[str, Any]:
     cur.setdefault("provider", "tavily")
     cur.setdefault("api_key", "")
     cur.setdefault("max_results", 5)
+    cur.setdefault("use_vpn", False)
+    cur.setdefault("vpn_sub_id", "")
+    cur.setdefault("vpn_node", "")
     return cur
 
 
@@ -832,6 +839,9 @@ def mask_search(s: dict[str, Any] | None = None) -> dict[str, Any]:
         "provider": cur.get("provider", "tavily"),
         "api_key_set": bool(cur.get("api_key")),
         "max_results": int(cur.get("max_results") or 5),
+        "use_vpn": bool(cur.get("use_vpn")),
+        "vpn_sub_id": cur.get("vpn_sub_id", ""),
+        "vpn_node": cur.get("vpn_node", ""),
     }
 
 
@@ -852,6 +862,12 @@ def set_search(patch: dict[str, Any]) -> dict[str, Any]:
             cur["max_results"] = max(1, min(10, int(patch["max_results"])))
         except (TypeError, ValueError):
             pass
+    if "use_vpn" in patch and patch["use_vpn"] is not None:
+        cur["use_vpn"] = bool(patch["use_vpn"])
+    if "vpn_sub_id" in patch and patch["vpn_sub_id"] is not None:
+        cur["vpn_sub_id"] = str(patch["vpn_sub_id"])
+    if "vpn_node" in patch and patch["vpn_node"] is not None:
+        cur["vpn_node"] = str(patch["vpn_node"])
     s["search"] = cur
     save_settings(s)
     return mask_search(cur)

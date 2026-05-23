@@ -18,7 +18,8 @@ import httpx
 from config import get_search
 
 
-def _tavily_search(query: str, n: int, key: str) -> list[dict[str, Any]]:
+def _tavily_search(query: str, n: int, key: str,
+                   proxy: str | None = None) -> list[dict[str, Any]]:
     """同步:POST api.tavily.com/search,返结构化结果。"""
     url = "https://api.tavily.com/search"
     payload = {
@@ -30,7 +31,7 @@ def _tavily_search(query: str, n: int, key: str) -> list[dict[str, Any]]:
         "include_raw_content": False,
     }
     try:
-        with httpx.Client(timeout=15.0) as c:
+        with httpx.Client(timeout=15.0, proxy=proxy) as c:
             r = c.post(url, json=payload)
         if r.status_code != 200:
             return []
@@ -47,7 +48,8 @@ def _tavily_search(query: str, n: int, key: str) -> list[dict[str, Any]]:
         return []
 
 
-async def _tavily_search_async(query: str, n: int, key: str
+async def _tavily_search_async(query: str, n: int, key: str,
+                                proxy: str | None = None
                                 ) -> list[dict[str, Any]]:
     """异步版,逻辑同步等价。"""
     url = "https://api.tavily.com/search"
@@ -57,7 +59,7 @@ async def _tavily_search_async(query: str, n: int, key: str
         "include_answer": False, "include_raw_content": False,
     }
     try:
-        async with httpx.AsyncClient(timeout=15.0) as c:
+        async with httpx.AsyncClient(timeout=15.0, proxy=proxy) as c:
             r = await c.post(url, json=payload)
         if r.status_code != 200:
             return []
@@ -74,12 +76,31 @@ async def _tavily_search_async(query: str, n: int, key: str
         return []
 
 
-def _resolve() -> tuple[str, str, int]:
-    """读 search 配置,返回 (provider, api_key, max_results)。"""
+def _resolve_proxy(cfg: dict) -> tuple[str | None, str]:
+    """如果搜索配了走 VPN,启对应 mihomo 节点,返 (proxy_url, err)。
+    err=CORE_MISSING 时上层应弹「按需下载内核」提示。"""
+    if not cfg.get("use_vpn"):
+        return None, ""
+    sid = cfg.get("vpn_sub_id") or ""
+    node = cfg.get("vpn_node") or ""
+    if not sid or not node:
+        return None, "走 VPN 但未选订阅/节点"
+    import vpn
+    url, err = vpn.ensure_proxy(sid, node)
+    return url, err
+
+
+def _resolve() -> dict[str, Any]:
+    """读 search 配置 + 解析 VPN proxy。失败把 vpn_error 也返回。"""
     cfg = get_search()
-    return (str(cfg.get("provider", "tavily")).lower(),
-            str(cfg.get("api_key") or ""),
-            int(cfg.get("max_results") or 5))
+    proxy, vpn_err = _resolve_proxy(cfg)
+    return {
+        "provider": str(cfg.get("provider", "tavily")).lower(),
+        "api_key": str(cfg.get("api_key") or ""),
+        "n": int(cfg.get("max_results") or 5),
+        "proxy": proxy,
+        "vpn_error": vpn_err,
+    }
 
 
 async def web_search(query: str, n: int = 0) -> list[dict[str, Any]]:
@@ -87,12 +108,13 @@ async def web_search(query: str, n: int = 0) -> list[dict[str, Any]]:
     q = (query or "").strip()
     if not q:
         return []
-    provider, key, default_n = _resolve()
-    use_n = n or default_n
-    if provider == "tavily":
-        if not key:
+    cfg = _resolve()
+    use_n = n or cfg["n"]
+    if cfg["provider"] == "tavily":
+        if not cfg["api_key"]:
             return []
-        return await _tavily_search_async(q, use_n, key)
+        return await _tavily_search_async(q, use_n, cfg["api_key"],
+                                           proxy=cfg["proxy"])
     return []  # provider="off" 或未知
 
 
@@ -101,12 +123,12 @@ def web_search_sync(query: str, n: int = 0) -> list[dict[str, Any]]:
     q = (query or "").strip()
     if not q:
         return []
-    provider, key, default_n = _resolve()
-    use_n = n or default_n
-    if provider == "tavily":
-        if not key:
+    cfg = _resolve()
+    use_n = n or cfg["n"]
+    if cfg["provider"] == "tavily":
+        if not cfg["api_key"]:
             return []
-        return _tavily_search(q, use_n, key)
+        return _tavily_search(q, use_n, cfg["api_key"], proxy=cfg["proxy"])
     return []
 
 
@@ -120,22 +142,34 @@ def as_context(results: list[dict[str, Any]]) -> str:
 
 
 def test_query(query: str = "ping") -> dict[str, Any]:
-    """搜索配置自检,设置页「测试搜索」按钮用。
-    返回 {ok, provider, count, results?, error?}。"""
-    provider, key, _ = _resolve()
+    """搜索配置自检。返回 {ok, provider, via_vpn, count, results?, error?,
+    core_missing?}。core_missing 信号让前端弹「按需下载内核」提示。"""
+    cfg = _resolve()
+    provider = cfg["provider"]
     if provider == "off":
         return {"ok": False, "provider": "off",
                 "error": "联网搜索已关闭(provider=off)"}
-    if not key:
+    if not cfg["api_key"]:
         return {"ok": False, "provider": provider,
                 "error": f"{provider} 未配置 api_key"}
+    # VPN 缺内核 → 跟其它地方一致发 core_missing 信号
+    import vpn as _vpn
+    if cfg["vpn_error"] == _vpn.CORE_MISSING:
+        return {"ok": False, "provider": provider, "core_missing": True,
+                "error": "走 VPN 但本机缺网络代理组件"}
+    if cfg["vpn_error"]:
+        return {"ok": False, "provider": provider,
+                "error": f"VPN 启动失败:{cfg['vpn_error']}"}
     try:
         results = web_search_sync(query or "ping", 3)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "provider": provider, "error": str(e)[:200]}
+    via_vpn = bool(cfg["proxy"])
     if not results:
+        hint = ("0 条结果 —— 检查 key 是否正确"
+                 + ("" if via_vpn else
+                    ";Tavily 在国内通常需走 VPN,可在下方勾选"))
         return {"ok": False, "provider": provider, "count": 0,
-                "error": f"{provider} 返回 0 条结果 —— 检查 key 是否正确、"
-                         "是否需要走 VPN(Tavily 在国内需代理)"}
-    return {"ok": True, "provider": provider, "count": len(results),
-            "results": results}
+                "via_vpn": via_vpn, "error": hint}
+    return {"ok": True, "provider": provider, "via_vpn": via_vpn,
+            "count": len(results), "results": results}
