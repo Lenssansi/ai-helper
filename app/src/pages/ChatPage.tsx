@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  chatfsStop,
   createConversation,
   getConversation,
   getProviders,
@@ -356,8 +357,17 @@ export default function ChatPage({
   }
 
   function stop() {
+    // 先发停止给后端 —— 这是关键:文件模式下后端的 subprocess.run 是阻塞
+    // 的,光 abort SSE 流后端进程还在跑(等120s超时),会导致 RUNS 卡死
+    // 下次发消息无法打开文件。chatfsStop 会强杀子进程 + 标 cancelled。
+    const rid = cfRunRef.current;
+    if (rid) {
+      chatfsStop(rid).catch(() => {/* ignore */});
+      cfRunRef.current = "";
+    }
     acRef.current?.abort();
     setStreaming(false);
+    setCfAwait(null);
     persist(messagesRef.current);
   }
 
@@ -406,13 +416,51 @@ export default function ChatPage({
             <div className="bubble">
               {m.role === "assistant" ? (
                 <>
-                  {m.events?.map((e, k) =>
-                    e.type === "tool" ? (
-                      <div key={k} className="ev ev-tool">
-                        ▶ {e.name}
-                        <pre>{JSON.stringify(e.args)}</pre>
-                      </div>
-                    ) : (
+                  {m.events?.map((e, k) => {
+                    if (e.type === "tool") {
+                      // 没有后续 result = 这个工具正在跑(因为 tool/result
+                      // 总是 1:1 顺序成对)。给个 spinner + 进行中提示,避免
+                      // 用户分不清是卡住还是耗时长(run_command 跑脚本最常见)。
+                      const inflight = !(m.events || [])
+                        .slice(k + 1)
+                        .some((x) => x.type === "result");
+                      return (
+                        <div
+                          key={k}
+                          className={
+                            "ev ev-tool" + (inflight ? " inflight" : "")
+                          }
+                        >
+                          {inflight ? (
+                            <span
+                              className="spinner"
+                              style={{
+                                width: 11,
+                                height: 11,
+                                borderWidth: 2,
+                                marginRight: 6,
+                                verticalAlign: "middle",
+                              }}
+                            />
+                          ) : (
+                            "▶ "
+                          )}
+                          <strong>{e.name}</strong>
+                          {inflight && (
+                            <span
+                              className="muted"
+                              style={{ marginLeft: 6, fontSize: 12 }}
+                            >
+                              {e.name === "run_command"
+                                ? "运行中,可能需要一会儿…"
+                                : "进行中…"}
+                            </span>
+                          )}
+                          <pre>{JSON.stringify(e.args)}</pre>
+                        </div>
+                      );
+                    }
+                    return (
                       <div
                         key={k}
                         className={
@@ -430,8 +478,41 @@ export default function ChatPage({
                           {JSON.stringify(e.result).slice(0, 2000)}
                         </pre>
                       </div>
-                    )
-                  )}
+                    );
+                  })}
+                  {/* 工具执行间隙(模型还没决定下一步) + 正在等模型 = 也显示
+                       一个心跳;条件:streaming=true,但当前消息没在跑工具,
+                       也没在出 token */}
+                  {streaming &&
+                    i === messages.length - 1 &&
+                    !m.content &&
+                    !m.reasoning &&
+                    !(
+                      m.events &&
+                      m.events.length > 0 &&
+                      m.events[m.events.length - 1].type === "tool"
+                    ) && (
+                      <div
+                        className="muted"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          fontSize: 12,
+                          marginBottom: 4,
+                        }}
+                      >
+                        <span
+                          className="spinner"
+                          style={{
+                            width: 11,
+                            height: 11,
+                            borderWidth: 2,
+                          }}
+                        />
+                        {m.web !== undefined ? "AI 思考中…" : "AI 正在响应…"}
+                      </div>
+                    )}
                   {m.route && (
                     <div
                       className="route-badge"

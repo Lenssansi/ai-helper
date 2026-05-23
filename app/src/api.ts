@@ -72,6 +72,15 @@ export interface BrainCfg {
   local_answer: boolean;
   summary: boolean;
   summary_threshold: number;
+  /** local=本地 Ollama;cloud=借用 provider 的 preset 当大脑(便宜 Flash 类) */
+  backend?: "local" | "cloud";
+  cloud_provider_id?: string;
+  cloud_preset_label?: string;
+}
+export interface BrainTestResult {
+  backend: string;
+  overall: "pass" | "fail";
+  checks: { name: string; ok: boolean; detail: string }[];
 }
 export interface OllamaCfg {
   base_url: string;
@@ -273,6 +282,10 @@ export interface CoreInstallResult {
   error?: string;
 }
 /** force=true 即使已装也重装(用于「更新内核」)。 */
+/** 强制停止 chatfs 文件模式的 run(同时杀掉任何正在跑的子进程)。 */
+export const chatfsStop = (run_id: string) =>
+  sendJSON<{ ok: boolean }>("/api/chatfs/stop", "POST", { run_id });
+
 export const installVpnCore = (force = false) =>
   sendJSON<CoreInstallResult>("/api/vpn/install-core", "POST", { force });
 
@@ -602,6 +615,30 @@ export const saveBrain = (body: {
   "POST",
   body
 );
+export const testBrain = () =>
+  sendJSON<BrainTestResult>("/api/brain/test", "POST");
+
+// ---- 联网搜索(独立配置)----
+export interface SearchCfg {
+  provider: string;
+  api_key_set: boolean;
+  max_results: number;
+}
+export interface SearchTestResult {
+  ok: boolean;
+  provider: string;
+  count?: number;
+  results?: { title: string; snippet: string; url: string }[];
+  error?: string;
+}
+export const getSearchCfg = () => getJSON<SearchCfg>("/api/search");
+export const saveSearchCfg = (patch: {
+  provider?: string;
+  api_key?: string; // ""=不改;"__clear__"=清空;其它=设新值
+  max_results?: number;
+}) => sendJSON<SearchCfg>("/api/search", "POST", patch);
+export const testSearch = (query = "ping") =>
+  sendJSON<SearchTestResult>("/api/search/test", "POST", { query });
 
 export const listConversations = () =>
   getJSON<ConvSummary[]>("/api/conversations");

@@ -85,11 +85,24 @@ DEFAULTS: dict[str, Any] = {
         "test_cmd": "",       # 改动后自动跑的测试命令，如 pytest / npm test
     },
     "ollama": {"base_url": "http://localhost:11434", "model": "qwen2.5:3b"},
+    # 联网搜索:独立于 providers,自己一套配置(用户可在 API 管理里也存
+    # 同一 key,两边互不可见、互不影响)
+    "search": {
+        "provider": "tavily",  # tavily | off
+        "api_key": "",
+        "max_results": 5,
+    },
     "brain": {
         "auto_route": True,    # 本地模型自动选 API
         "local_answer": True,  # 琐碎问题本地直答
         "summary": True,       # 长对话滚动摘要
         "summary_threshold": 20,  # 历史消息数超过则摘要更早的部分
+        # 大脑后端:local=本地 Ollama(免费但效果一般);cloud=用某个 provider
+        # 的某个 preset 充当大脑(便宜云端 Flash 类模型 ¥1-2/月即可,效果
+        # 明显好于本地 3B)
+        "backend": "local",
+        "cloud_provider_id": "",
+        "cloud_preset_label": "",
     },
 }
 
@@ -592,6 +605,14 @@ def set_brain(patch: dict[str, Any]) -> dict[str, Any]:
             cur[k] = bool(patch[k])
     if isinstance(patch.get("summary_threshold"), int):
         cur["summary_threshold"] = max(6, patch["summary_threshold"])
+    if "backend" in patch and patch["backend"]:
+        b = str(patch["backend"]).lower()
+        if b in ("local", "cloud"):
+            cur["backend"] = b
+    if "cloud_provider_id" in patch and patch["cloud_provider_id"] is not None:
+        cur["cloud_provider_id"] = str(patch["cloud_provider_id"])
+    if "cloud_preset_label" in patch and patch["cloud_preset_label"] is not None:
+        cur["cloud_preset_label"] = str(patch["cloud_preset_label"])
     s["brain"] = cur
     save_settings(s)
     return cur
@@ -792,6 +813,48 @@ def confirm_required(tool_name: str, high_risk: bool) -> bool:
     if lvl == "all":
         return True
     return tool_name in _ALWAYS_CONFIRM
+
+
+def get_search() -> dict[str, Any]:
+    """联网搜索配置(含明文 key —— 仅供后端 search.py 用)。"""
+    s = load_settings()
+    cur = dict(s.get("search") or {})
+    cur.setdefault("provider", "tavily")
+    cur.setdefault("api_key", "")
+    cur.setdefault("max_results", 5)
+    return cur
+
+
+def mask_search(s: dict[str, Any] | None = None) -> dict[str, Any]:
+    """前端展示用:不暴露明文 key,只告知是否已设。"""
+    cur = s or get_search()
+    return {
+        "provider": cur.get("provider", "tavily"),
+        "api_key_set": bool(cur.get("api_key")),
+        "max_results": int(cur.get("max_results") or 5),
+    }
+
+
+def set_search(patch: dict[str, Any]) -> dict[str, Any]:
+    """更新搜索配置。api_key 空字符串=不改,显式设 "__clear__" 才清空。"""
+    s = load_settings()
+    cur = dict(s.get("search") or {})
+    if "provider" in patch and patch["provider"]:
+        cur["provider"] = str(patch["provider"]).strip()
+    if "api_key" in patch and patch["api_key"] is not None:
+        ak = str(patch["api_key"])
+        if ak == "__clear__":
+            cur["api_key"] = ""
+        elif ak.strip():
+            cur["api_key"] = ak.strip()
+    if "max_results" in patch and patch["max_results"] is not None:
+        try:
+            cur["max_results"] = max(1, min(10, int(patch["max_results"])))
+        except (TypeError, ValueError):
+            pass
+    s["search"] = cur
+    save_settings(s)
+    return mask_search(cur)
 
 
 def get_theme() -> str:

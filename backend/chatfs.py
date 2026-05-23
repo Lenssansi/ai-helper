@@ -10,9 +10,12 @@
 
 from __future__ import annotations
 
+import contextvars
 import os
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +25,32 @@ CMD_TIMEOUT = 120
 
 class FsError(Exception):
     pass
+
+
+# ---- 可中断:跟踪每个 run 当前正在跑的子进程,允许外部 stop ----
+# 通过 ContextVar 把当前 run_id 隐式传给 run_command(不必改 run_tool 签名)。
+# chat_agent._drive 调用前 set,调用后 reset。
+_CURRENT_RID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "chatfs_rid", default=None,
+)
+_PROCS: dict[str, subprocess.Popen] = {}
+_PROCS_LOCK = threading.Lock()
+
+
+def kill_run(rid: str) -> bool:
+    """外部(/api/chatfs/stop)调:终结某 run 当前正在跑的子进程。
+    返回是否找到并终结。"""
+    if not rid:
+        return False
+    with _PROCS_LOCK:
+        p = _PROCS.pop(rid, None)
+    if not p:
+        return False
+    try:
+        p.kill()
+    except OSError:
+        pass
+    return True
 
 
 def _decode(b: bytes) -> str:
@@ -129,7 +158,10 @@ def edit_file(path: str, old: str, new: str, base: str = "") -> dict:
 def run_command(command: str, cwd: str = "",
                 base: str = "") -> dict[str, Any]:
     """跑命令行(bat/exe/python 等),供普通对话也能让 AI 执行脚本。
-    高危——执行前会弹用户确认。无白名单约束(普通对话本就全盘可访问)。"""
+    高危——执行前会弹用户确认。无白名单约束(普通对话本就全盘可访问)。
+
+    可中断:用 Popen+communicate,把进程登记到 _PROCS;外部调 kill_run(rid)
+    能立刻 terminate,communicate 立刻返回。"""
     if not command or not command.strip():
         raise FsError("命令为空")
     work_dir = (cwd or base or os.getcwd())
@@ -138,18 +170,42 @@ def run_command(command: str, cwd: str = "",
             work_dir = os.getcwd()
     except OSError:
         work_dir = os.getcwd()
+
+    rid = _CURRENT_RID.get()
     try:
-        r = subprocess.run(
-            command, shell=True, cwd=work_dir, capture_output=True,
-            text=True, timeout=CMD_TIMEOUT, errors="replace",
+        proc = subprocess.Popen(
+            command, shell=True, cwd=work_dir,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, errors="replace",
+            creationflags=(0x08000000 if os.name == "nt" else 0),
         )
-    except subprocess.TimeoutExpired:
-        raise FsError(f"命令超时(>{CMD_TIMEOUT}s)") from None
+    except OSError as e:
+        raise FsError(f"启动失败:{e}") from None
+    if rid:
+        with _PROCS_LOCK:
+            _PROCS[rid] = proc
+    try:
+        try:
+            out, err = proc.communicate(timeout=CMD_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                out, err = proc.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                out, err = "", ""
+            raise FsError(f"命令超时(>{CMD_TIMEOUT}s),已强制终止") from None
+    finally:
+        if rid:
+            with _PROCS_LOCK:
+                _PROCS.pop(rid, None)
+    # proc 被外部 kill_run 终止时 returncode 会是 -1/-9 之类
+    killed_externally = proc.returncode is not None and proc.returncode < 0
     return {
-        "exit_code": r.returncode,
-        "stdout": (r.stdout or "")[-8000:],
-        "stderr": (r.stderr or "")[-4000:],
+        "exit_code": proc.returncode,
+        "stdout": (out or "")[-8000:],
+        "stderr": (err or "")[-4000:],
         "cwd": work_dir,
+        "killed": killed_externally,
     }
 
 

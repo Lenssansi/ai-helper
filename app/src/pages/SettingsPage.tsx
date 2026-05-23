@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import BrainBackendPanel from "../components/BrainBackendPanel";
 import ComponentsPanel from "../components/ComponentsPanel";
+import SearchPanel from "../components/SearchPanel";
 import {
   getBrain,
   getOllamaStatus,
@@ -558,7 +560,14 @@ export default function SettingsPage({
         ) : (
           <div className="muted">加载中…</div>
         )}
+        <BrainBackendPanel
+          brain={brain}
+          onBrainChange={setBrain}
+          canSettings={canSettings}
+        />
       </section>
+
+      <SearchPanel canSettings={canSettings} />
 
       <section className="set-block">
         <div className="set-title">编程 Agent 工作区</div>

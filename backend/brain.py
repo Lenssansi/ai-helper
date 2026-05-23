@@ -31,7 +31,29 @@ async def ollama_status() -> dict[str, Any]:
 
 
 async def _complete(messages: list[dict], max_tokens: int = 512) -> str | None:
-    """非流式跑本地模型，拿完整文本。失败返回 None。"""
+    """非流式跑「大脑」模型,拿完整文本。失败返回 None。
+
+    新增 cloud 后端:若 brain.backend == "cloud" 且配了 provider+preset,
+    走该 provider(走它自己的 vpn/key/url 都对的);否则回退到本地 Ollama。
+    """
+    from config import get_brain, resolve_choice
+    b = get_brain()
+    if b.get("backend") == "cloud" and b.get("cloud_provider_id"):
+        resolved = resolve_choice(
+            b["cloud_provider_id"], b.get("cloud_preset_label", ""),
+        )
+        if resolved and resolved.get("api_key"):
+            try:
+                from providers import get_provider as build_provider
+                prov = build_provider(resolved)
+                r = await prov.tool_complete(messages, [])
+                content = (r.get("content") or "").strip()
+                if content:
+                    return content
+            except Exception:  # noqa: BLE001
+                pass
+            # 云端失败 → 降级本地
+    # 本地 Ollama
     cfg = get_ollama()
     base = cfg["base_url"].rstrip("/")
     if not base.endswith("/v1"):
@@ -53,6 +75,114 @@ async def _complete(messages: list[dict], max_tokens: int = 512) -> str | None:
             return r.json()["choices"][0]["message"]["content"]
     except (httpx.RequestError, KeyError, IndexError, ValueError):
         return None
+
+
+async def test_backend() -> dict[str, Any]:
+    """大脑后端综合自检:连通 / JSON 输出 / 工具调用。每项 ok/error + 总评。"""
+    from config import get_brain, resolve_choice
+    b = get_brain()
+    backend = b.get("backend") or "local"
+    results: dict[str, Any] = {"backend": backend, "checks": []}
+
+    def add(name: str, ok: bool, detail: str = "") -> None:
+        results["checks"].append({"name": name, "ok": ok, "detail": detail})
+
+    # 1) 基础连通 + 中文 completion
+    try:
+        out = await _complete(
+            [{"role": "user", "content": "回复『可以』两个字"}],
+            max_tokens=20,
+        )
+        if out and len(out) > 0:
+            add("基础对话", True, out[:40])
+        else:
+            add("基础对话", False, "未返回内容")
+            results["overall"] = "fail"
+            return results
+    except Exception as e:  # noqa: BLE001
+        add("基础对话", False, str(e)[:120])
+        results["overall"] = "fail"
+        return results
+
+    # 2) 严格 JSON 输出(路由任务依赖这个)
+    try:
+        out = await _complete(
+            [
+                {"role": "system", "content":
+                 "严格只输出一个 JSON,不要任何额外文字或代码块。"},
+                {"role": "user", "content":
+                 '返回 {"choice":"a","reason":"hi"}'},
+            ],
+            max_tokens=80,
+        )
+        ok_json = False
+        if out:
+            import re as _re
+            m = _re.search(r"\{.*\}", out, _re.S)
+            if m:
+                try:
+                    import json as _json
+                    obj = _json.loads(m.group(0))
+                    ok_json = "choice" in obj
+                except Exception:  # noqa: BLE001
+                    pass
+        add("JSON 路由格式", ok_json,
+            (out or "")[:80] if not ok_json else "OK")
+    except Exception as e:  # noqa: BLE001
+        add("JSON 路由格式", False, str(e)[:120])
+
+    # 3) 工具调用(仅 cloud 路径有意义;local Ollama 多数小模型不支持)
+    tool_ok = False
+    tool_detail = ""
+    if backend == "cloud" and b.get("cloud_provider_id"):
+        resolved = resolve_choice(
+            b["cloud_provider_id"], b.get("cloud_preset_label", ""),
+        )
+        if resolved and resolved.get("api_key"):
+            try:
+                from providers import get_provider as build_provider
+                prov = build_provider(resolved)
+                spec = [{
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get weather of a city",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                            "required": ["city"],
+                        },
+                    },
+                }]
+                r = await prov.tool_complete(
+                    [{"role": "user", "content":
+                      "What's the weather in Beijing? "
+                      "Call get_weather if you have a tool."}],
+                    spec,
+                )
+                if r.get("tool_calls"):
+                    tool_ok = True
+                    tool_detail = (
+                        f"tool_calls={len(r['tool_calls'])} "
+                        f"({r['tool_calls'][0].get('name','')})"
+                    )
+                else:
+                    tool_detail = "未返回 tool_calls(模型可能不支持工具)"
+            except Exception as e:  # noqa: BLE001
+                tool_detail = str(e)[:120]
+    else:
+        tool_detail = "本地 Ollama 模式下不测工具(本地小模型多不支持)"
+    add("工具调用", tool_ok, tool_detail)
+
+    fails = [c for c in results["checks"] if not c["ok"]]
+    if backend == "cloud":
+        results["overall"] = "fail" if fails else "pass"
+    else:
+        # 本地模式:工具调用失败可接受;只要基础+JSON 通过就算 pass
+        critical = [c for c in results["checks"]
+                    if c["name"] != "工具调用" and not c["ok"]]
+        results["overall"] = "fail" if critical else "pass"
+    return results
 
 
 _TRIVIAL = {

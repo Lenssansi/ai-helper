@@ -83,54 +83,84 @@ async def _drive(rid: str) -> AsyncIterator[bytes]:
     if prov is None:
         yield _sse({"type": "error", "error": perr or "云端 API 不可用"})
         return
-    while True:
-        while run["bi"] < len(run["batch"]):
-            c = run["batch"][run["bi"]]
-            if (confirm_required(c["name"], ts.is_high_risk(c["name"]))
-                    and not c.get("_decided")):
-                run["status"] = "awaiting"
-                yield _sse({"type": "confirm", "tool": c["name"],
-                            "args": c["arguments"], "call_id": c["id"]})
+    # 把当前 rid 放进 chatfs 的 ContextVar,run_command 据此把子进程登记
+    # 到 _PROCS。外部 /api/chatfs/stop 能据此 kill 它。
+    rid_token = chatfs._CURRENT_RID.set(rid)
+    try:
+        while True:
+            if run.get("cancelled"):
+                yield _sse({"type": "cancelled"})
+                RUNS.pop(rid, None)
                 return
-            if c.get("_denied"):
-                content = "用户拒绝了该操作，请改用别的方式或询问用户。"
-            else:
-                yield _sse({"type": "tool", "name": c["name"],
-                            "args": c["arguments"]})
-                res = ts.run_tool(c["name"], c["arguments"], run["base"])
-                content = json.dumps(res, ensure_ascii=False)[:8000]
-                yield _sse({"type": "result", "name": c["name"],
-                            "result": res})
-            run["messages"].append({"role": "tool",
-                                    "tool_call_id": c["id"],
-                                    "content": content})
-            run["bi"] += 1
-        try:
-            resp = await prov.tool_complete(run["messages"],
-                                            run["ts"].tool_specs())
-        except Exception as e:  # noqa: BLE001
-            yield _sse({"type": "error", "error": f"模型调用失败：{e}"})
-            return
-        asst: dict[str, Any] = {"role": "assistant",
-                                "content": resp["content"]}
-        if resp["tool_calls"]:
-            asst["tool_calls"] = [
-                {"id": t["id"], "type": "function",
-                 "function": {"name": t["name"],
-                              "arguments": json.dumps(t["arguments"],
-                                                      ensure_ascii=False)}}
-                for t in resp["tool_calls"]
-            ]
-        run["messages"].append(asst)
-        if not resp["tool_calls"]:
-            run["status"] = "done"
-            if resp["content"]:
-                yield _sse({"type": "answer", "content": resp["content"]})
-            yield _sse({"type": "done"})
-            RUNS.pop(rid, None)  # 本轮结束即清理（会话历史由前端持久化）
-            return
-        run["batch"] = resp["tool_calls"]
-        run["bi"] = 0
+            while run["bi"] < len(run["batch"]):
+                if run.get("cancelled"):
+                    yield _sse({"type": "cancelled"})
+                    RUNS.pop(rid, None)
+                    return
+                c = run["batch"][run["bi"]]
+                if (confirm_required(c["name"], ts.is_high_risk(c["name"]))
+                        and not c.get("_decided")):
+                    run["status"] = "awaiting"
+                    yield _sse({"type": "confirm", "tool": c["name"],
+                                "args": c["arguments"], "call_id": c["id"]})
+                    return
+                if c.get("_denied"):
+                    content = "用户拒绝了该操作，请改用别的方式或询问用户。"
+                else:
+                    yield _sse({"type": "tool", "name": c["name"],
+                                "args": c["arguments"]})
+                    res = ts.run_tool(c["name"], c["arguments"], run["base"])
+                    content = json.dumps(res, ensure_ascii=False)[:8000]
+                    yield _sse({"type": "result", "name": c["name"],
+                                "result": res})
+                run["messages"].append({"role": "tool",
+                                        "tool_call_id": c["id"],
+                                        "content": content})
+                run["bi"] += 1
+            if run.get("cancelled"):
+                yield _sse({"type": "cancelled"})
+                RUNS.pop(rid, None)
+                return
+            try:
+                resp = await prov.tool_complete(run["messages"],
+                                                run["ts"].tool_specs())
+            except Exception as e:  # noqa: BLE001
+                yield _sse({"type": "error", "error": f"模型调用失败：{e}"})
+                return
+            asst: dict[str, Any] = {"role": "assistant",
+                                    "content": resp["content"]}
+            if resp["tool_calls"]:
+                asst["tool_calls"] = [
+                    {"id": t["id"], "type": "function",
+                     "function": {"name": t["name"],
+                                  "arguments": json.dumps(t["arguments"],
+                                                          ensure_ascii=False)}}
+                    for t in resp["tool_calls"]
+                ]
+            run["messages"].append(asst)
+            if not resp["tool_calls"]:
+                run["status"] = "done"
+                if resp["content"]:
+                    yield _sse({"type": "answer", "content": resp["content"]})
+                yield _sse({"type": "done"})
+                RUNS.pop(rid, None)
+                return
+            run["batch"] = resp["tool_calls"]
+            run["bi"] = 0
+    finally:
+        chatfs._CURRENT_RID.reset(rid_token)
+
+
+def stop_run(rid: str) -> bool:
+    """外部调:把指定 run 标 cancelled + 杀掉任何正在跑的子进程。
+    _drive 下一个 yield 点会检测到 cancelled 并 yield {type:cancelled} 退出。
+    若 run 不存在(可能已结束)则只尝试 kill 还在跑的子进程。"""
+    killed = chatfs.kill_run(rid)
+    run = RUNS.get(rid)
+    if run is not None:
+        run["cancelled"] = True
+        return True
+    return killed
 
 
 async def stream_start(

@@ -1,153 +1,113 @@
-"""无需 API key 的联网搜索。
+"""联网搜索 —— 改用付费/免费的搜索 API(默认 Tavily)。
 
-主源 Bing HTML（对无 key GET 较宽容），失败兜底 DuckDuckGo lite。
-只取前几条标题/摘要/链接喂给模型当上下文。任何失败都安全降级（返回 []），
-绝不打断对话。
+为什么换掉原来的 Bing/DDG HTML 抓取:HTML 改版/反爬频繁、关键词不精,
+质量太差。Tavily 是专为 LLM 设计的搜索 API(api.tavily.com),返回
+结构化结果,免费 1000 次/月对个人足够。
+
+配置在 settings.json 的 `search` 段(独立于 providers!),由 config 的
+get_search() / set_search() 维护。如 provider="off" 或 api_key 没填 →
+直接返 [](不做查询),不再用 HTML 抓取兜底(已彻底清除)。
 """
 
 from __future__ import annotations
 
-import base64
-import binascii
-import html
-import re
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
-)
-_HDRS = {"User-Agent": _UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
-_TAG = re.compile(r"<[^>]+>")
-
-_BING = re.compile(
-    r'<h2[^>]*><a[^>]+href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a></h2>'
-    r'.*?<p class="b_lineclamp[^"]*">(?P<snip>.*?)</p>',
-    re.DOTALL,
-)
-_DDG = re.compile(
-    r'class="result-link"[^>]*href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>'
-    r'.*?class="result-snippet"[^>]*>(?P<snip>.*?)</td>',
-    re.DOTALL,
-)
+from config import get_search
 
 
-def _clean(s: str) -> str:
-    return html.unescape(_TAG.sub("", s)).strip()
-
-
-def _debing(u: str) -> str:
-    """Bing 重定向 https://www.bing.com/ck/a?...&u=a1<base64> -> 真实 URL。"""
-    u = html.unescape(u)
-    if "bing.com/ck/a" not in u:
-        return u
-    q = parse_qs(urlparse(u).query)
-    raw = (q.get("u") or [""])[0]
-    if raw.startswith("a1"):
-        raw = raw[2:]
+def _tavily_search(query: str, n: int, key: str) -> list[dict[str, Any]]:
+    """同步:POST api.tavily.com/search,返结构化结果。"""
+    url = "https://api.tavily.com/search"
+    payload = {
+        "api_key": key,
+        "query": query,
+        "search_depth": "basic",  # advanced 更贵更慢,basic 够用
+        "max_results": max(1, min(int(n), 10)),
+        "include_answer": False,
+        "include_raw_content": False,
+    }
     try:
-        pad = "=" * (-len(raw) % 4)
-        return base64.urlsafe_b64decode(raw + pad).decode("utf-8", "replace")
-    except (binascii.Error, ValueError):
-        return u
-
-
-async def _fetch(client: httpx.AsyncClient, method: str, url: str,
-                  **kw) -> str | None:
-    try:
-        r = await (client.get(url, **kw) if method == "GET"
-                   else client.post(url, **kw))
-        if r.status_code == 200:
-            return r.text
-    except (httpx.RequestError, httpx.HTTPError):
-        pass
-    return None
-
-
-async def web_search(query: str, n: int = 5) -> list[dict[str, Any]]:
-    q = (query or "").strip()
-    if not q:
-        return []
-    out: list[dict[str, Any]] = []
-    async with httpx.AsyncClient(
-        timeout=8.0, headers=_HDRS, follow_redirects=True
-    ) as c:
-        # 1) Bing
-        body = await _fetch(c, "GET", "https://www.bing.com/search",
-                            params={"q": q})
-        if body:
-            for m in _BING.finditer(body):
-                out.append({
-                    "title": _clean(m.group("title"))[:160],
-                    "snippet": _clean(m.group("snip"))[:320],
-                    "url": _debing(m.group("url")),
-                })
-                if len(out) >= n:
-                    return out
-        if out:
-            return out
-        # 2) DuckDuckGo lite 兜底
-        body = await _fetch(c, "POST", "https://lite.duckduckgo.com/lite/",
-                            data={"q": q})
-        if body:
-            for m in _DDG.finditer(body):
-                out.append({
-                    "title": _clean(m.group("title"))[:160],
-                    "snippet": _clean(m.group("snip"))[:320],
-                    "url": html.unescape(m.group("url")),
-                })
-                if len(out) >= n:
-                    break
-    return out
-
-
-def web_search_sync(query: str, n: int = 5) -> list[dict[str, Any]]:
-    """同步版（供 Agent 工具循环用，避免在已运行的事件循环里 asyncio.run）。
-    逻辑同 web_search：Bing 优先，DuckDuckGo lite 兜底；失败安全返回 []。"""
-    q = (query or "").strip()
-    if not q:
-        return []
-    out: list[dict[str, Any]] = []
-    try:
-        with httpx.Client(timeout=8.0, headers=_HDRS,
-                          follow_redirects=True) as c:
-            try:
-                r = c.get("https://www.bing.com/search", params={"q": q})
-                body = r.text if r.status_code == 200 else None
-            except (httpx.RequestError, httpx.HTTPError):
-                body = None
-            if body:
-                for m in _BING.finditer(body):
-                    out.append({
-                        "title": _clean(m.group("title"))[:160],
-                        "snippet": _clean(m.group("snip"))[:320],
-                        "url": _debing(m.group("url")),
-                    })
-                    if len(out) >= n:
-                        return out
-            if out:
-                return out
-            try:
-                r = c.post("https://lite.duckduckgo.com/lite/",
-                           data={"q": q})
-                body = r.text if r.status_code == 200 else None
-            except (httpx.RequestError, httpx.HTTPError):
-                body = None
-            if body:
-                for m in _DDG.finditer(body):
-                    out.append({
-                        "title": _clean(m.group("title"))[:160],
-                        "snippet": _clean(m.group("snip"))[:320],
-                        "url": html.unescape(m.group("url")),
-                    })
-                    if len(out) >= n:
-                        break
-    except Exception:  # noqa: BLE001
+        with httpx.Client(timeout=15.0) as c:
+            r = c.post(url, json=payload)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        out: list[dict[str, Any]] = []
+        for item in (data.get("results") or [])[:n]:
+            out.append({
+                "title": str(item.get("title") or "")[:200],
+                "snippet": str(item.get("content") or "")[:500],
+                "url": str(item.get("url") or ""),
+            })
         return out
-    return out
+    except (httpx.HTTPError, ValueError, KeyError):
+        return []
+
+
+async def _tavily_search_async(query: str, n: int, key: str
+                                ) -> list[dict[str, Any]]:
+    """异步版,逻辑同步等价。"""
+    url = "https://api.tavily.com/search"
+    payload = {
+        "api_key": key, "query": query, "search_depth": "basic",
+        "max_results": max(1, min(int(n), 10)),
+        "include_answer": False, "include_raw_content": False,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.post(url, json=payload)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        out: list[dict[str, Any]] = []
+        for item in (data.get("results") or [])[:n]:
+            out.append({
+                "title": str(item.get("title") or "")[:200],
+                "snippet": str(item.get("content") or "")[:500],
+                "url": str(item.get("url") or ""),
+            })
+        return out
+    except (httpx.HTTPError, ValueError, KeyError):
+        return []
+
+
+def _resolve() -> tuple[str, str, int]:
+    """读 search 配置,返回 (provider, api_key, max_results)。"""
+    cfg = get_search()
+    return (str(cfg.get("provider", "tavily")).lower(),
+            str(cfg.get("api_key") or ""),
+            int(cfg.get("max_results") or 5))
+
+
+async def web_search(query: str, n: int = 0) -> list[dict[str, Any]]:
+    """异步联网搜索。失败/未配置都返 []。"""
+    q = (query or "").strip()
+    if not q:
+        return []
+    provider, key, default_n = _resolve()
+    use_n = n or default_n
+    if provider == "tavily":
+        if not key:
+            return []
+        return await _tavily_search_async(q, use_n, key)
+    return []  # provider="off" 或未知
+
+
+def web_search_sync(query: str, n: int = 0) -> list[dict[str, Any]]:
+    """同步版(供 Agent 工具循环用)。"""
+    q = (query or "").strip()
+    if not q:
+        return []
+    provider, key, default_n = _resolve()
+    use_n = n or default_n
+    if provider == "tavily":
+        if not key:
+            return []
+        return _tavily_search(q, use_n, key)
+    return []
 
 
 def as_context(results: list[dict[str, Any]]) -> str:
@@ -157,3 +117,25 @@ def as_context(results: list[dict[str, Any]]) -> str:
     for i, r in enumerate(results, 1):
         lines.append(f"{i}. {r['title']}\n   {r['snippet']}\n   {r['url']}")
     return "\n".join(lines)
+
+
+def test_query(query: str = "ping") -> dict[str, Any]:
+    """搜索配置自检,设置页「测试搜索」按钮用。
+    返回 {ok, provider, count, results?, error?}。"""
+    provider, key, _ = _resolve()
+    if provider == "off":
+        return {"ok": False, "provider": "off",
+                "error": "联网搜索已关闭(provider=off)"}
+    if not key:
+        return {"ok": False, "provider": provider,
+                "error": f"{provider} 未配置 api_key"}
+    try:
+        results = web_search_sync(query or "ping", 3)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "provider": provider, "error": str(e)[:200]}
+    if not results:
+        return {"ok": False, "provider": provider, "count": 0,
+                "error": f"{provider} 返回 0 条结果 —— 检查 key 是否正确、"
+                         "是否需要走 VPN(Tavily 在国内需代理)"}
+    return {"ok": True, "provider": provider, "count": len(results),
+            "results": results}

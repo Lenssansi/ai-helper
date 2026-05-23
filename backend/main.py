@@ -55,10 +55,11 @@ from skills_loader import status as skills_status
 import github_up
 from agent_session import rollback as agent_rollback
 from agent_session import stream_continue, stream_respond, stream_start
+from chat_agent import stop_run as cf_stop_run
 from chat_agent import stream_respond as cf_respond
 from chat_agent import stream_start as cf_start
 from brain import ollama_status, route, summarize
-from search import as_context, web_search
+from search import as_context, test_query as _search_test, web_search
 from providers import get_provider as build_provider
 from providers.base import ProviderError
 from security import Caller, get_caller, require_permission
@@ -314,6 +315,10 @@ class BrainPatch(BaseModel):
     local_answer: bool | None = None
     summary: bool | None = None
     summary_threshold: int | None = None
+    # 大脑后端:local=本地 Ollama;cloud=借用某 provider 的 preset
+    backend: str | None = None  # "local" | "cloud"
+    cloud_provider_id: str | None = None
+    cloud_preset_label: str | None = None
 
 
 class WorkspacePatch(BaseModel):
@@ -537,6 +542,46 @@ def write_confirm_level(
 def read_usage(caller: Caller = Depends(get_caller)) -> dict:  # noqa: ARG001
     import usage
     return usage.get_usage()
+
+
+# ---------- 联网搜索配置(独立于 providers)----------
+
+class SearchPatch(BaseModel):
+    provider: str | None = None
+    api_key: str | None = None  # ""=不改;"__clear__"=清空
+    max_results: int | None = None
+
+
+class SearchTestReq(BaseModel):
+    query: str = "ping"
+
+
+@app.get("/api/search")
+def search_read(caller: Caller = Depends(get_caller)) -> dict:
+    """读联网搜索配置(脱敏,不暴露 api_key 明文)。仅本机:含 key 状态。"""
+    _local_only(caller)
+    from config import mask_search
+    return mask_search()
+
+
+@app.post("/api/search")
+def search_write(
+    body: SearchPatch,
+    caller: Caller = Depends(require_permission("settings")),
+) -> dict:
+    _local_only(caller)
+    from config import set_search
+    return set_search(body.model_dump(exclude_none=True))
+
+
+@app.post("/api/search/test")
+def search_test(
+    body: SearchTestReq,
+    caller: Caller = Depends(get_caller),
+) -> dict:
+    """搜索配置自检 —— 实发一次查询,返回结果或具体错误。"""
+    _local_only(caller)
+    return _search_test(body.query)
 
 
 # ---------- Git 检测 + 安装引导 ----------
@@ -1245,6 +1290,17 @@ def write_brain(
     return {"brain": b, "ollama": o}
 
 
+@app.post("/api/brain/test")
+async def brain_test_ep(
+    caller: Caller = Depends(get_caller),  # noqa: ARG001
+) -> dict:
+    """大脑后端综合自检:基础对话 / JSON 输出 / 工具调用(cloud 才测)。
+    每项 ok/detail + 总评 overall。本地 Ollama 模式不强求工具调用通过。"""
+    _local_only(caller)
+    from brain import test_backend
+    return await test_backend()
+
+
 def _ws_git(ws: dict) -> dict:
     cwd = ws.get("cwd", "")
     return {**ws, "cwd_is_git": bool(
@@ -1356,6 +1412,23 @@ async def chatfs_start(
         cf_start(body.messages, body.base, body.mode),
         media_type="text/event-stream",
     )
+
+
+class ChatfsStop(BaseModel):
+    run_id: str
+
+
+@app.post("/api/chatfs/stop")
+def chatfs_stop(
+    body: ChatfsStop,
+    caller: Caller = Depends(get_caller),
+) -> dict:
+    """停止指定 chatfs run。把它标 cancelled,并强制 kill 任何正在跑的子进程
+    —— 修复了「点停止后,subprocess.run 仍在跑直到超时,导致下次重新发消息
+    无法打开文件」的卡死问题。仅本机。"""
+    if caller.trust != "local":
+        raise HTTPException(status_code=403, detail="文件模式仅本机可用")
+    return {"ok": cf_stop_run(body.run_id)}
 
 
 @app.post("/api/chatfs/respond")
