@@ -78,6 +78,8 @@ async function ensureAstrbot() {
       PYTHONIOENCODING: "utf-8",
       PYTHONUTF8: "1",
       AIH_PACKED: PACKED ? "1" : "0",
+      // 仅 dev 模式开 AstrBot 插件热重载(改插件代码不用重启)
+      ASTRBOT_RELOAD: PACKED ? "0" : "1",
     },
   });
   astrbotProc.on("error", () => (astrbotProc = null));

@@ -44,8 +44,11 @@ import workspace  # type: ignore[import-not-found]
 from astrbot.api import logger, star
 from astrbot.api.event import AstrMessageEvent, filter
 
-MAX_READ = 200_000
-CMD_TIMEOUT = 120
+MAX_READ = 200_000          # 单文件读取上限,防爆 LLM 上下文
+MAX_WRITE = 10_000_000      # 单文件写入上限 10MB,防 DoS 填磁盘
+CMD_TIMEOUT = 120           # shell 命令超时,防卡死
+WALK_MAX_DEPTH = 15         # 递归搜索深度上限
+WALK_MAX_FILES = 10_000     # 递归搜索文件计数上限
 
 
 def _decode_bytes(b: bytes) -> str:
@@ -235,7 +238,7 @@ class Main(star.Star):
     async def t_write_file(
         self, event: AstrMessageEvent, path: str, content: str
     ) -> str:
-        """写或覆盖文件(限授权白名单内)。文件不存在会自动创建父目录。
+        """写或覆盖文件(限授权白名单内)。文件不存在会自动创建父目录。单文件 10MB 上限。
 
         Args:
             path(string): 要写的文件绝对路径
@@ -245,19 +248,26 @@ class Main(star.Star):
             p = _resolve_safe(path)
         except workspace.ScopeError as e:
             return f"[scope error] {e}"
+        # 大小限制:防 LLM 误操作或对抗注入 DoS 填磁盘
+        size = len(content.encode("utf-8"))
+        if size > MAX_WRITE:
+            return (
+                f"[error] 内容过大 ({size:,} bytes,超 {MAX_WRITE:,} 上限),"
+                "请拆分写入或确认是否真要写这么大的文件"
+            )
         try:
             existed = p.exists()
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
         except OSError as e:
             return f"[error] 写失败:{e}"
-        return f"{'已覆盖' if existed else '已新建'}:{p}"
+        return f"{'已覆盖' if existed else '已新建'}:{p} ({size:,} bytes)"
 
     @filter.llm_tool(name="aih_bash")
     async def t_bash(
         self, event: AstrMessageEvent, command: str, cwd: str = ""
     ) -> str:
-        """在指定工作目录跑 shell 命令(cwd 必须在白名单内,超时 120s)。
+        """[HIGH POWER] 在指定工作目录跑 shell 命令。cwd 必须在白名单内,但命令本身能访问 cwd 外的资源(如 `type C:\\file`)。LLM 调用时应明确告知用户在做什么。超时 120s。
 
         Args:
             command(string): shell 命令
@@ -304,10 +314,24 @@ class Main(star.Star):
         if not base.is_dir():
             return f"[error] 不是目录:{base}"
         hits: list[str] = []
+        files_scanned = 0
+        base_str = str(base)
         for root, _dirs, files in os.walk(base):
+            # 深度限制:防遍历过深(用户授权 D:\ 整盘时尤其重要)
+            depth = root.count(os.sep) - base_str.count(os.sep)
+            if depth > WALK_MAX_DEPTH:
+                _dirs.clear()  # 不再深入
+                continue
             if any(s in root for s in (".git", "node_modules", ".venv", "__pycache__")):
+                _dirs.clear()
                 continue
             for f in files:
+                files_scanned += 1
+                if files_scanned > WALK_MAX_FILES:
+                    return (
+                        "\n".join(hits)
+                        + f"\n…(扫到 {WALK_MAX_FILES} 文件上限,中止;请用更具体的 path)"
+                    )
                 fp = Path(root) / f
                 try:
                     text = _decode_bytes(fp.read_bytes())

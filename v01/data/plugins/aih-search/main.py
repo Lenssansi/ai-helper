@@ -85,16 +85,18 @@ class Main(star.Star):
                 "请在 v01/data/aih-config.json 填 tavily_api_key 字段"
             )
         else:
+            # 不打印 key 片段,避免截屏/日志意外外泄
             logger.info(
-                f"[aih-search] 已就绪,proxy={self._proxy or '直连'}"
+                f"[aih-search] 已配置 API key,proxy={self._proxy or '直连'}"
             )
 
     @filter.command("aih-search-check")
     async def search_check(self, event: AstrMessageEvent) -> None:
         """诊断:确认搜索插件配置情况(给作者用,不是给 LLM)。"""
         lines = ["aih-search 配置自检:"]
+        # 自检命令只对作者本人显示,但仍避免输出 key 片段以防截屏外泄
         lines.append(
-            f"  API key:      {'已配置(' + self._api_key[:8] + '...)' if self._api_key else '❌ 未配置'}"
+            f"  API key:      {'✅ 已配置' if self._api_key else '❌ 未配置'}"
         )
         lines.append(f"  代理:         {self._proxy or '直连(无 VPN)'}")
         lines.append(f"  Tavily 端点:  {TAVILY_ENDPOINT}")
