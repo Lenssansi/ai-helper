@@ -198,49 +198,65 @@ class Main(star.Star):
         if not items:
             yield event.plain_result("没有订阅,用 /aih-vpn-sub-add <名字> <URL> 添加。")
             return
-        lines = [f"订阅 {len(items)} 个:"]
+        lines = [f"订阅 {len(items)} 个(其它命令可用名字代替 ID):"]
         for s in items:
             lines.append(
-                f"  • {s['id']}  {s.get('name', '?')}  "
-                f"({len(s.get('nodes') or [])} 节点, {_fmt_age(s.get('updated'))})"
+                f"  • 【{s.get('name', '?')}】 "
+                f"{len(s.get('nodes') or [])} 节点 · {_fmt_age(s.get('updated'))} · "
+                f"ID={s['id']}"
             )
         yield event.plain_result("\n".join(lines))
 
     @filter.command("aih-vpn-sub-del")
-    async def cmd_sub_del(self, event: AstrMessageEvent, sid: str = "") -> None:
-        if not sid:
-            yield event.plain_result("用法:/aih-vpn-sub-del <订阅ID>")
+    async def cmd_sub_del(self, event: AstrMessageEvent, query: str = "") -> None:
+        """/aih-vpn-sub-del <ID|名字>"""
+        sub, err = _resolve_sub(query)
+        if err:
+            yield event.plain_result(f"❌ {err}")
             return
-        ok = subs.delete_sub(sid)
-        yield event.plain_result(f"{'✅ 删除' if ok else '❌ 未找到订阅'}: {sid}")
+        ok = subs.delete_sub(sub["id"])
+        yield event.plain_result(
+            f"{'✅ 删除' if ok else '❌ 未找到'}: 【{sub['name']}】 [{sub['id']}]"
+        )
 
     @filter.command("aih-vpn-sub-refresh")
-    async def cmd_sub_refresh(self, event: AstrMessageEvent, sid: str = "") -> None:
-        if not sid:
-            yield event.plain_result("用法:/aih-vpn-sub-refresh <订阅ID>")
+    async def cmd_sub_refresh(self, event: AstrMessageEvent, query: str = "") -> None:
+        """/aih-vpn-sub-refresh <ID|名字>"""
+        sub, err = _resolve_sub(query)
+        if err:
+            yield event.plain_result(f"❌ {err}")
             return
-        yield event.plain_result("刷新中(从原 URL 重拉)…")
+        yield event.plain_result(f"刷新【{sub['name']}】中(从原 URL 重拉)…")
         import asyncio
 
         try:
-            rec = await asyncio.to_thread(subs.refresh_sub, sid)
+            rec = await asyncio.to_thread(subs.refresh_sub, sub["id"])
         except ValueError as e:
             yield event.plain_result(f"❌ {e}")
             return
         yield event.plain_result(
-            f"✅ 刷新成功 - {rec['name']}\n  节点数:{len(rec.get('nodes') or [])}"
+            f"✅ 刷新成功 -【{rec['name']}】\n  节点数:{len(rec.get('nodes') or [])}"
         )
 
     # ---------------------------------------------------- test + use
 
     @filter.command("aih-vpn-test")
-    async def cmd_test(self, event: AstrMessageEvent, sid: str = "") -> None:
-        if not sid:
-            yield event.plain_result("用法:/aih-vpn-test <订阅ID>")
+    async def cmd_test(self, event: AstrMessageEvent, query: str = "") -> None:
+        """/aih-vpn-test <ID|名字>(只有一个订阅时可省略)"""
+        sub, err = _resolve_sub(query)
+        if err:
+            yield event.plain_result(f"❌ {err}")
             return
-        yield event.plain_result("并发 TCP 测速中(最长 4s/节点 × 16 并发)…")
+        yield event.plain_result(
+            f"测速【{sub['name']}】中({self._test_timeout}s/节点 × "
+            f"{self._test_concurrency} 并发)…"
+        )
         try:
-            results = await latency.test_all(sid, timeout=4.0, max_concurrency=16)
+            results = await latency.test_all(
+                sub["id"],
+                timeout=float(self._test_timeout),
+                max_concurrency=self._test_concurrency,
+            )
         except ValueError as e:
             yield event.plain_result(f"❌ {e}")
             return
@@ -259,31 +275,42 @@ class Main(star.Star):
         if ok_count > 0:
             top = results[0]
             lines.append("")
-            lines.append(f"最快:{top['node']}({top['ms']} ms)")
-            lines.append(f"开启:/aih-vpn-use {sid} {top['node']}")
+            lines.append(f"最快:{top['node']} ({top['ms']} ms)")
+            lines.append(f"开启:/aih-vpn-use {sub['name']} {top['node']}")
         yield event.plain_result("\n".join(lines))
 
     @filter.command("aih-vpn-use")
     async def cmd_use(
-        self, event: AstrMessageEvent, sid: str = "", node: str = ""
+        self, event: AstrMessageEvent, query: str = "", node: str = ""
     ) -> None:
-        if not sid or not node:
-            yield event.plain_result("用法:/aih-vpn-use <订阅ID> <节点名>")
-            return
-        sub = subs.get_sub(sid)
-        if not sub:
-            yield event.plain_result(f"❌ 订阅不存在:{sid}")
+        """/aih-vpn-use <ID|名字> <节点名>(单订阅时 ID/名字可省略)"""
+        # 兼容单订阅省略订阅参数:若 query 解析为订阅失败但 node 留空,
+        # 尝试把 query 当作节点名 + 默认订阅
+        sub, err = _resolve_sub(query)
+        if err:
+            sub2, err2 = _resolve_sub("")  # 看是否有唯一默认订阅
+            if not err2 and not node and query:
+                sub = sub2
+                node = query
+            else:
+                yield event.plain_result(f"❌ {err}")
+                return
+        if not node:
+            yield event.plain_result(
+                f"用法:/aih-vpn-use <ID|名字> <节点名>\n"
+                f"提示:先 /aih-vpn-test 【{sub['name']}】看可用节点"
+            )
             return
         node_dict = subs.extract_node_dict(sub.get("yaml_content", ""), node)
         if not node_dict:
             yield event.plain_result(
-                f"❌ 节点 '{node}' 不在订阅 {sid} 里\n"
-                f"提示:/aih-vpn-test {sid} 可看可用节点列表"
+                f"❌ 节点 '{node}' 不在订阅【{sub['name']}】里\n"
+                f"提示:/aih-vpn-test {sub['name']} 看可用节点"
             )
             return
         import asyncio
 
-        url, err = await asyncio.to_thread(mihomo.ensure_proxy, sid, node_dict)
+        url, err = await asyncio.to_thread(mihomo.ensure_proxy, sub["id"], node_dict)
         if err == mihomo.CORE_MISSING:
             yield event.plain_result("❌ mihomo 未装,先 /aih-vpn-install")
             return
@@ -292,7 +319,10 @@ class Main(star.Star):
             return
         _set_aih_proxy(url)
         yield event.plain_result(
-            f"✅ {node} 已起,代理 URL = {url}\n"
-            f"AIH_PROXY 已设;aih-search 等插件下一次调用将走这条出口。\n"
+            f"✅ {node} 已起 @【{sub['name']}】\n"
+            f"代理 URL = {url}\n"
+            f"AIH_PROXY 已设(aih-search 自动用)。\n"
+            f"要让 LLM provider 走 VPN:dashboard → 提供商 → 编辑 →\n"
+            f"  proxy 字段填:{url}\n"
             f"停止:/aih-vpn-stop"
         )
