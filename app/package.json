@@ -1,7 +1,7 @@
 {
   "name": "ai-helper-app",
   "private": true,
-  "version": "0.0.5",
+  "version": "0.1.1",
   "description": "本地部署的个人 AI 助手（对话/编程Agent/本地模型/联网/文件）",
   "author": "Lenssansi",
   "main": "electron/main.cjs",
