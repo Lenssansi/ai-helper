@@ -50,6 +50,57 @@ def _fmt_age(unix_ts: int | None) -> str:
     return f"{delta // 86400}d 前"
 
 
+def _resolve_sub(query: str) -> tuple[dict | None, str]:
+    """把用户给的 query 解析成一条订阅。支持:ID 全名 / 名字 / ID 前缀 / 名字片段。
+
+    返回 (sub_dict, error_msg):成功时 error_msg 为 "";失败时 sub_dict 为 None。
+    - query 为空且只有一条订阅 → 自动选那条(省得每次打名字)
+    - query 为空且有多条 → 报错并列出供选
+    - 命中多条(歧义)→ 报错并列出让用户用更精确的写法
+    """
+    try:
+        items = subs.list_subs()
+    except Exception as e:  # noqa: BLE001
+        return None, f"读订阅列表失败:{e}"
+
+    if not items:
+        return None, "还没有任何订阅。先用 /aih-vpn-sub-add <名字> <URL> 添加。"
+
+    q = (query or "").strip()
+    if not q:
+        if len(items) == 1:
+            return items[0], ""
+        names = "、".join(s.get("name", "?") for s in items)
+        return None, f"有 {len(items)} 条订阅,请指明用哪条(名字或 ID):{names}"
+
+    # 1) ID 全名精确
+    for s in items:
+        if s.get("id") == q:
+            return s, ""
+    # 2) 名字精确
+    exact = [s for s in items if s.get("name") == q]
+    if len(exact) == 1:
+        return exact[0], ""
+    if len(exact) > 1:
+        ids = "、".join(s.get("id", "?") for s in exact)
+        return None, f"有多条订阅都叫「{q}」,请改用 ID 区分:{ids}"
+    # 3) ID 前缀
+    pref = [s for s in items if str(s.get("id", "")).startswith(q)]
+    if len(pref) == 1:
+        return pref[0], ""
+    if len(pref) > 1:
+        return None, f"ID 前缀「{q}」匹配到多条,请补全 ID。"
+    # 4) 名字片段
+    part = [s for s in items if q in str(s.get("name", ""))]
+    if len(part) == 1:
+        return part[0], ""
+    if len(part) > 1:
+        names = "、".join(f"{s.get('name', '?')}({s.get('id', '?')[:6]})" for s in part)
+        return None, f"名字含「{q}」的订阅有多条:{names},请写更精确。"
+
+    return None, f"找不到订阅「{q}」。用 /aih-vpn-sub-list 看现有订阅。"
+
+
 def _set_aih_proxy(url: str | None) -> None:
     if url:
         os.environ["AIH_PROXY"] = url

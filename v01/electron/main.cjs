@@ -154,7 +154,28 @@ function createWindow() {
   return win;
 }
 
+// 单实例锁:防止「bat 启一个 + 桌面快捷方式又启一个」两个 Electron 抢同一个
+// 6185 python。没有这个锁时,第二个 Electron 会 piggyback 第一个拉起的 python;
+// 一旦关掉第一个窗口(其 before-quit 杀掉共享的 python),第二个窗口的 dashboard
+// 就连到死后端 → 表现为「服务未启用 / 所有模型失效」(bug #3)。
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    // 已有实例:把现有窗口提到前台,而不是新开一个
+    const wins = BrowserWindow.getAllWindows();
+    if (wins.length) {
+      const w = wins[0];
+      if (w.isMinimized()) w.restore();
+      w.focus();
+    }
+  });
+}
+
 app.whenReady().then(async () => {
+  if (!gotLock) return; // 第二实例:whenReady 里直接退,交给上面的 app.quit()
+
   const win = createWindow();
 
   const started = await ensureAstrbot();

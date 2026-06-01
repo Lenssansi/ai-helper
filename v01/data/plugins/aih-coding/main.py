@@ -12,12 +12,14 @@ slash 命令(对作者):
   /aih-coding-allow <绝对路径>       授权根目录加白名单
   /aih-coding-roots                  看现有白名单
   /aih-coding-revoke <绝对路径>      撤销授权
-  /aih-skill-list                    列可用 skills
+  /aih-skill-list                    列克隆仓 skills + 是否已导入
+  /aih-skill-import <name>           把克隆仓 skill 导入 AstrBot skills_root
   /aih-skill-show <skill-name>       预览 skill 内容
 
-钩子:
-  @on_llm_request:读当前会话 persona 的 skills 字段,把对应 SKILL.md
-  内容拼到 system_prompt 末尾。grill-with-docs 就是通过这条链子激活的。
+skill 注入:
+  由 AstrBot 原生 _ensure_persona_and_skills() 负责(读 persona.skills,
+  把 skills_root 下选中的 SKILL.md 拼进 system_prompt)。本插件只做
+  「克隆仓 → skills_root」的搬运(/aih-skill-import),不自己注入。
 
 安全:
   - 所有路径工具都过 workspace.in_scope 白名单
@@ -31,7 +33,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 # 平铺 import(plugin 目录名含连字符)
 _HERE = Path(__file__).resolve().parent
@@ -151,26 +152,44 @@ class Main(star.Star):
 
     @filter.command("aih-skill-list")
     async def cmd_skill_list(self, event: AstrMessageEvent):
-        """列出 D:\\ai-helper\\skills 下所有可用的 skills。"""
+        """列出克隆仓里的 skills + 标注是否已导入 AstrBot。"""
         items = skills.list_available()
         if not items:
             yield event.plain_result(
-                "没找到任何 skill。检查 D:\\ai-helper\\skills 目录是否克隆了"
-                " 作者的 skills 仓库。"
+                "克隆仓里没找到 skill。检查 D:\\ai-helper\\skills 是否克隆了 skills 仓。"
             )
             return
-        lines = [f"可用 skills({len(items)} 个):"]
+        lines = [f"克隆仓里有 {len(items)} 个 skill(✅=已导入 AstrBot,可在人格里选):"]
         for s in items:
-            lines.append(f"  • [{s['category']:15s}] {s['name']}")
+            mark = "✅" if skills.is_installed(s["name"]) else "  "
+            lines.append(f"  {mark} [{s['category']:14s}] {s['name']}")
         lines.append("")
-        lines.append(
-            "如何启用:dashboard → 人格 → 编辑 → skills 字段填 skill 名(如 grill-with-docs)"
-        )
+        lines.append("导入一个让它在人格编辑器里可选:/aih-skill-import <name>")
+        lines.append("已导入的:dashboard → 人格 → 编辑 → skills 勾上即可生效")
         yield event.plain_result("\n".join(lines))
+
+    @filter.command("aih-skill-import")
+    async def cmd_skill_import(self, event: AstrMessageEvent, name: str = ""):
+        """把克隆仓里的 skill 复制进 AstrBot skills_root,使其可在人格里选用。"""
+        if not name:
+            yield event.plain_result(
+                "用法:/aih-skill-import <skill-name>\n用 /aih-skill-list 看有哪些。"
+            )
+            return
+        ok, msg = skills.install_to_root(name)
+        if not ok:
+            yield event.plain_result(f"❌ {msg}")
+            return
+        yield event.plain_result(
+            f"✅ 已导入「{name}」→ {msg}\n"
+            f"下一步:dashboard → 人格 → 编辑你的人格 → skills 里勾上「{name}」→ 保存。\n"
+            f"(新 skill 默认 active,AstrBot 会在对话时自动把它注入。)\n"
+            f"⚠️ 导入后需重启 AstrBot 让原生 skill 列表刷新。"
+        )
 
     @filter.command("aih-skill-show")
     async def cmd_skill_show(self, event: AstrMessageEvent, name: str = ""):
-        """预览一个 skill 的内容(去 frontmatter)。"""
+        """预览克隆仓里某 skill 的内容(去 frontmatter)。"""
         if not name:
             yield event.plain_result("用法:/aih-skill-show <skill-name>")
             return
@@ -178,7 +197,6 @@ class Main(star.Star):
         if not content:
             yield event.plain_result(f"❌ 没找到 skill '{name}',用 /aih-skill-list 看可用")
             return
-        # 截断防爆消息(WebChat 也能展示长文本但实在过长不友好)
         if len(content) > 4000:
             content = content[:4000] + "\n\n…(内容过长,截断,完整请去文件看)"
         yield event.plain_result(f"=== {name} ===\n\n{content}")
@@ -378,49 +396,8 @@ class Main(star.Star):
             return f"未找到 '{query}'(在 {base} 下)"
         return "\n".join(hits)
 
-    # ============ 钩子:按 persona.skills 注入 system_prompt ============
-
-    @filter.on_llm_request()
-    async def hook_inject_skills(
-        self,
-        event: AstrMessageEvent,
-        req: Any,  # ProviderRequest
-    ) -> None:
-        """读当前会话的 persona.skills,把对应 SKILL.md 拼到 system_prompt 末尾。
-
-        失败安全:任何异常吞掉只 log,不打断 LLM 调用。
-        """
-        try:
-            umo = event.unified_msg_origin
-            conv_id = await self.context.conversation_manager.get_curr_conversation_id(
-                umo
-            )
-            if not conv_id:
-                return
-            conv = await self.context.conversation_manager.get_conversation(
-                umo, conv_id
-            )
-            persona_id = getattr(conv, "persona_id", None) if conv else None
-            if not persona_id:
-                return
-            # AstrBot persona_manager.personas 是缓存,O(N)线性扫(N 通常 < 20)
-            persona = None
-            for p in (self.context.persona_manager.personas or []):
-                if p.persona_id == persona_id:
-                    persona = p
-                    break
-            if not persona:
-                return
-            skill_names = list(getattr(persona, "skills", None) or [])
-            if not skill_names:
-                return
-            extra = skills.build_skills_prompt(skill_names)
-            if not extra:
-                return
-            current = getattr(req, "system_prompt", "") or ""
-            req.system_prompt = current + extra
-            logger.debug(
-                f"[aih-coding] persona={persona_id} 注入 {len(skill_names)} 个 skills"
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[aih-coding] skills hook failed: {e}")
+    # 注:skill 注入由 AstrBot 原生 _ensure_persona_and_skills() 负责
+    # (astr_main_agent.py),它会把 persona.skills 选中的、且位于 skills_root
+    # (data/skills/)下的 SKILL.md 拼进 system_prompt。本插件不再自己注入,
+    # 避免重复。我们的职责改为「把克隆仓里的 skill 搬进 skills_root」(见
+    # /aih-skill-import),让它能被原生系统识别 + 在人格编辑器里选到。

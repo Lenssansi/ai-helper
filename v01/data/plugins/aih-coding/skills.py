@@ -1,28 +1,20 @@
-"""skills 加载器 —— 按名字找 SKILL.md,把内容做成 LLM 的 system prompt 增强。
+"""skills 导入桥 —— 把克隆仓里的 skill 搬进 AstrBot 原生 skills_root。
 
-作者的 skills 仓库克隆到了 D:\\ai-helper\\skills\\,里面是这种结构:
-  skills/
-    skills/
-      engineering/
-        grill-with-docs/SKILL.md
-      productivity/
-        grill-me/SKILL.md
-      ...
+背景:AstrBot 4.25 自带完整的 Skill 系统。它从 skills_root(=data/skills/)
+扫描 `<name>/SKILL.md`,在人格编辑器里列为可选项,并在对话时由原生的
+`_ensure_persona_and_skills()` 把 persona 选中的 skill 内容注入 system_prompt。
 
-支持 SKILL.md 的 frontmatter:
-  ---
-  name: skill-name
-  description: ...
-  ---
+但作者克隆的 skills 仓在 D:\\ai-helper\\skills\\(另一个目录,结构:
+  skills/skills/<category>/<skill-name>/SKILL.md),AstrBot 看不到它们。
 
-  正文 ...
-
-加载时去掉 frontmatter,留正文。
+本模块的职责 = 把克隆仓里的某个 skill **复制进** skills_root,
+使它被原生系统识别。不再自己做 prompt 注入(那是原生系统的事,重复=污染)。
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 # skills 仓位置查找顺序:
@@ -66,7 +58,7 @@ def list_available() -> list[dict[str, str]]:
 
 
 def load_skill_content(name: str) -> str | None:
-    """按名找 SKILL.md,返回去 frontmatter 后的正文;找不到返 None。"""
+    """按名找克隆仓里的 SKILL.md,返回去 frontmatter 后的正文;找不到返 None。"""
     for s in list_available():
         if s["name"] == name:
             try:
@@ -77,15 +69,37 @@ def load_skill_content(name: str) -> str | None:
     return None
 
 
-def build_skills_prompt(skill_names: list[str]) -> str:
-    """把多个 skill 内容拼成一段附加 system prompt。"""
-    blocks: list[str] = []
-    for name in skill_names or []:
-        content = load_skill_content(name)
-        if content:
-            blocks.append(
-                f"\n\n### Skill: {name}\n\n{content}"
-            )
-    if not blocks:
-        return ""
-    return "\n\n--- 以下是用户人格激活的 skills ---\n" + "".join(blocks)
+def skills_root() -> Path:
+    """AstrBot 原生 skills_root = data/skills/。"""
+    from astrbot.core.utils.astrbot_path import get_astrbot_skills_path
+
+    return Path(get_astrbot_skills_path())
+
+
+def is_installed(name: str) -> bool:
+    """该 skill 是否已在 skills_root 下(即原生系统已可见)。"""
+    return (skills_root() / name / "SKILL.md").exists()
+
+
+def install_to_root(name: str) -> tuple[bool, str]:
+    """把克隆仓里名为 name 的 skill 整目录复制进 skills_root。
+
+    返回 (ok, message)。已存在则覆盖(以仓里版本为准)。
+    """
+    src_dir: Path | None = None
+    for s in list_available():
+        if s["name"] == name:
+            src_dir = Path(s["path"]).parent
+            break
+    if src_dir is None or not src_dir.is_dir():
+        return False, f"克隆仓里找不到 skill「{name}」"
+
+    dst = skills_root() / name
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists():
+            shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(src_dir, dst)
+    except OSError as e:
+        return False, f"复制失败:{e}"
+    return True, str(dst)
