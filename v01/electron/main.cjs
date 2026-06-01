@@ -20,12 +20,21 @@ const http = require("http");
 const fs = require("fs");
 const { spawn } = require("child_process");
 
-const ROOT = path.join(__dirname, "..", ".."); // D:\ai-helper
-const V01_DIR = path.join(ROOT, "v01"); // D:\ai-helper\v01
-const PY = path.join(V01_DIR, ".venv", "Scripts", "python.exe");
+const PACKED = app.isPackaged;
+// dev:   __dirname = D:\ai-helper\v01\electron\
+// packed: __dirname = .../resources/app.asar/(electron/?)  → 用 process.resourcesPath 兜底
+const ROOT = path.join(__dirname, "..", ".."); // dev: D:\ai-helper
+// packed 下,bootstrap.py + venv + data + mihomo + skills 都在 resourcesPath 下
+// (extraResources 的目标位置就是 resources/)
+const V01_DIR = PACKED ? process.resourcesPath : path.join(ROOT, "v01");
+const PY = PACKED
+  ? path.join(V01_DIR, "venv", "Scripts", "python.exe")    // extraResources: .venv → venv
+  : path.join(V01_DIR, ".venv", "Scripts", "python.exe");
 const BOOTSTRAP = path.join(V01_DIR, "bootstrap.py");
 const DASHBOARD_URL = "http://127.0.0.1:6185/";
-const ICON = path.join(ROOT, "assets", "icon.ico");
+const ICON = PACKED
+  ? path.join(process.resourcesPath, "icon.ico")           // 配置时把 icon 也复制一份
+  : path.join(ROOT, "assets", "icon.ico");
 const LOADING_HTML = path.join(__dirname, "loading.html");
 
 let astrbotProc = null; // 仅记录「本进程拉起的」,共存场景不会乱杀
@@ -64,7 +73,12 @@ async function ensureAstrbot() {
     cwd: V01_DIR,
     stdio: "ignore", // dashboard 自己写日志到 v01/data/,不抢 Electron 终端
     windowsHide: true,
-    env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+    env: {
+      ...process.env,
+      PYTHONIOENCODING: "utf-8",
+      PYTHONUTF8: "1",
+      AIH_PACKED: PACKED ? "1" : "0",
+    },
   });
   astrbotProc.on("error", () => (astrbotProc = null));
   astrbotProc.on("exit", () => (astrbotProc = null));

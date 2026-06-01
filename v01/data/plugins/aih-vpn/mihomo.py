@@ -29,10 +29,16 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-# 跟 v0.0.5 共用 binary 位置,装一次两边都能用
+# mihomo 二进制位置查找顺序:
+#   1) 环境变量 AIH_MIHOMO_DIR(bootstrap.py 在 packed 模式设置)
+#   2) 源码同级 D:\ai-helper\mihomo\(dev 模式 + v0.0.5 共用)
 # 路径推算:mihomo.py(0) → aih-vpn(0) → plugins(1) → data(2) → v01(3) → ai-helper(4)
-_PROJECT_ROOT = Path(__file__).resolve().parents[4]  # D:\ai-helper
-MIHOMO_DIR = _PROJECT_ROOT / "mihomo"
+_ENV_MIHOMO = os.environ.get("AIH_MIHOMO_DIR", "").strip()
+if _ENV_MIHOMO:
+    MIHOMO_DIR = Path(_ENV_MIHOMO)
+else:
+    _PROJECT_ROOT = Path(__file__).resolve().parents[4]
+    MIHOMO_DIR = _PROJECT_ROOT / "mihomo"
 MIHOMO_EXE_CANDIDATES = ("mihomo.exe", "mihomo", "clash-meta.exe", "clash-meta")
 
 # 工作目录:跟 AstrBot 数据隔离,v0.0.5 也不会争

@@ -4,5 +4,96 @@
   "version": "0.1.1",
   "description": "ai-helper v0.1.x —— Electron 外壳,内含 AstrBot 核心",
   "author": "Lenssansi",
-  "main": "main.cjs"
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "dist": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.aihelper.app",
+    "productName": "ai-helper",
+    "directories": {
+      "output": "../../release/v${version}"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "loading.html",
+      "package.json"
+    ],
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "../.venv",
+        "to": "venv",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "../bootstrap.py",
+        "to": "bootstrap.py"
+      },
+      {
+        "from": "../data/dist",
+        "to": "data/dist"
+      },
+      {
+        "from": "../data/plugins",
+        "to": "data/plugins",
+        "filter": [
+          "aih-*/**",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "../../mihomo",
+        "to": "mihomo",
+        "filter": [
+          "mihomo.exe"
+        ]
+      },
+      {
+        "from": "../../skills",
+        "to": "skills",
+        "filter": [
+          "**/*",
+          "!**/.git/**",
+          "!**/node_modules/**"
+        ]
+      },
+      {
+        "from": "../../assets/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "../../assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false,
+      "differentialPackage": false,
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
+      "menuCategory": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "ai-helper"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8"
+  }
 }

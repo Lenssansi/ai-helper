@@ -25,9 +25,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# 跟 v0.0.5 共用米花菌的 skills 仓位置
-_PROJECT_ROOT = Path(__file__).resolve().parents[4]  # D:\ai-helper
-_SKILLS_ROOT = _PROJECT_ROOT / "skills"
+# skills 仓位置查找顺序:
+#   1) 环境变量 AIH_SKILLS_DIR(bootstrap.py 在 packed 模式设置)
+#   2) 源码同级 D:\ai-helper\skills\(dev 模式 + v0.0.5 共用)
+import os as _os
+
+_ENV_SKILLS = _os.environ.get("AIH_SKILLS_DIR", "").strip()
+if _ENV_SKILLS:
+    _SKILLS_ROOT = Path(_ENV_SKILLS)
+else:
+    _PROJECT_ROOT = Path(__file__).resolve().parents[4]
+    _SKILLS_ROOT = _PROJECT_ROOT / "skills"
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
 
