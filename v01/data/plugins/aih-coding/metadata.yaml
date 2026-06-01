@@ -1,0 +1,8 @@
+name: aih-coding
+desc: ai-helper 编程 Agent 工具集 + skills 加载器(含 grill-with-docs 盘问)。文件读写/bash/git 都走授权工作目录白名单
+version: 0.0.1
+author: Lenssansi
+repo: https://github.com/Lenssansi/ai-helper
+display_name: ai-helper 编程
+astrbot_version: ">=4.0.0"
+short_desc: 给 LLM 注册编程工具 + 按 persona.skills 加载技能(grill-with-docs 等)
