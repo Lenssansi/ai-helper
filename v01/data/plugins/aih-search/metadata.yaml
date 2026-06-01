@@ -1,0 +1,8 @@
+name: aih-search
+desc: ai-helper 联网搜索 —— 注册 aih_web_search tool 给 LLM 函数调用,后端 Tavily,支持借用 ai-helper 自带 VPN
+version: 0.0.1
+author: Lenssansi
+repo: https://github.com/Lenssansi/ai-helper
+display_name: ai-helper 联网搜索
+astrbot_version: ">=4.0.0"
+short_desc: LLM-callable 联网搜索 tool,后端可换,默认 Tavily
