@@ -1,0 +1,8 @@
+name: aih-balance
+desc: 查 AstrBot 已配 LLM provider 的余额(DeepSeek/OpenRouter/Moonshot/SiliconFlow);不支持的 host 报 supported=False
+version: 0.0.1
+author: Lenssansi
+repo: https://github.com/Lenssansi/ai-helper
+display_name: ai-helper 余额查询
+astrbot_version: ">=4.0.0"
+short_desc: /aih-balance 一键查所有 provider 余额,自动借 AIH_PROXY 出墙
