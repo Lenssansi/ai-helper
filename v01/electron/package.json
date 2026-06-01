@@ -1,0 +1,8 @@
+{
+  "name": "ai-helper-v01-shell",
+  "private": true,
+  "version": "0.1.1",
+  "description": "ai-helper v0.1.x —— Electron 外壳,内含 AstrBot 核心",
+  "author": "Lenssansi",
+  "main": "main.cjs"
+}
