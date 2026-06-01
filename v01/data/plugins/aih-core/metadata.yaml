@@ -1,0 +1,8 @@
+name: aih-core
+desc: ai-helper 核心插件 —— 共享配置 / HTTP 客户端 / 健康检查命令
+version: 0.0.1
+author: Lenssansi
+repo: https://github.com/Lenssansi/ai-helper
+display_name: ai-helper 核心
+astrbot_version: ">=4.0.0"
+short_desc: ai-helper plugin suite 的基础包,其他 aih-* 插件依赖它

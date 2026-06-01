@@ -10,7 +10,8 @@
 id_rsa
 id_rsa.*
 # settings.json(含远程令牌)、API 密钥等本地数据
-data/
+# 根目录 data/ 是 v0.0.5 dev 数据;v01/data/ 见下方精细规则
+/data/
 
 # 本地私有备注目录（仅本机，不进仓库）；上传自检亦会兜底拦截
 .private-memory/
@@ -75,7 +76,15 @@ Thumbs.db
 backup-v*/
 v01/.tools/
 v01/.venv/
-v01/data/
+# v01/data 整体不入仓(SQLite/cmd_config/初始密码全在这),但我们自家 aih-* 插件源码要追踪
+v01/data/*
+!v01/data/plugins/
+v01/data/plugins/*
+!v01/data/plugins/aih-*/
+!v01/data/plugins/aih-*/**
+# 反向白名单内的 Python 字节码仍要忽略
+v01/data/plugins/aih-*/**/__pycache__/
+v01/data/plugins/aih-*/**/*.pyc
 
 # 本地图标素材包,与代码无关
 icos/
