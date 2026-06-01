@@ -31,7 +31,7 @@ class Main(star.Star):
     @filter.command("aih-hello")
     async def aih_hello(self, event: AstrMessageEvent) -> None:
         """快速验证 ai-helper 插件已加载,WebChat 输入 /aih-hello 即触发。"""
-        await event.send(
+        yield event.plain_result(
             f"✅ ai-helper v{AIH_VERSION} 在线 —— 插件系统工作正常。"
         )
 
@@ -43,7 +43,7 @@ class Main(star.Star):
         except ImportError:
             ASTRBOT_VER = "unknown"
         py = sys.version.split()[0]
-        await event.send(
+        yield event.plain_result(
             f"ai-helper:v{AIH_VERSION}\n"
             f"AstrBot: v{ASTRBOT_VER}\n"
             f"Python:  {py}"
@@ -65,7 +65,7 @@ class Main(star.Star):
             data = "<同上>"
 
         plugin_path = Path(__file__).resolve().parent
-        await event.send(
+        yield event.plain_result(
             f"ASTRBOT_ROOT: {root}\n"
             f"DATA_PATH:    {data}\n"
             f"本插件路径:   {plugin_path}"

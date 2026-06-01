@@ -141,7 +141,7 @@ class Main(star.Star):
         lines.append("用法:")
         lines.append("  /aih-persona-bind <persona_id> <provider_id>")
         lines.append("  /aih-persona-unbind <persona_id>")
-        await event.send("\n".join(lines))
+        yield event.plain_result("\n".join(lines))
 
     @filter.command("aih-persona-bind")
     async def cmd_bind(
@@ -153,24 +153,24 @@ class Main(star.Star):
         """绑定:/aih-persona-bind <persona_id> <provider_id>"""
         await self._ensure_init()
         if not persona_id or not provider_id:
-            await event.send("用法:/aih-persona-bind <persona_id> <provider_id>")
+            yield event.plain_result("用法:/aih-persona-bind <persona_id> <provider_id>")
             return
         providers = self._all_provider_ids()
         if provider_id not in providers:
-            await event.send(
+            yield event.plain_result(
                 f"❌ 未知 provider_id: {provider_id}\n"
                 f"已加载的:{', '.join(providers) or '(无)'}"
             )
             return
         personas = set(self._all_persona_ids())
         if persona_id not in personas:
-            await event.send(
+            yield event.plain_result(
                 f"❌ 未知 persona_id: {persona_id}\n"
                 f"已有的:{', '.join(personas) or '(无)'}"
             )
             return
         await self._persist_binding(persona_id, provider_id)
-        await event.send(f"✅ {persona_id} → {provider_id}")
+        yield event.plain_result(f"✅ {persona_id} → {provider_id}")
 
     @filter.command("aih-persona-unbind")
     async def cmd_unbind(
@@ -179,12 +179,12 @@ class Main(star.Star):
         """解除:/aih-persona-unbind <persona_id>"""
         await self._ensure_init()
         if not persona_id:
-            await event.send("用法:/aih-persona-unbind <persona_id>")
+            yield event.plain_result("用法:/aih-persona-unbind <persona_id>")
             return
         if await self._delete_binding(persona_id):
-            await event.send(f"✅ {persona_id} 解除绑定,后续会用全局默认 provider")
+            yield event.plain_result(f"✅ {persona_id} 解除绑定,后续会用全局默认 provider")
         else:
-            await event.send(f"{persona_id} 本就未绑定,无操作。")
+            yield event.plain_result(f"{persona_id} 本就未绑定,无操作。")
 
     @filter.command("aih-persona-check")
     async def cmd_check(self, event: AstrMessageEvent) -> None:
@@ -215,7 +215,7 @@ class Main(star.Star):
             lines.append(f"实际使用:  {_provider_id(curr) if curr else '(None)'}")
         except Exception as e:  # noqa: BLE001
             lines.append(f"取当前 provider 失败:{e}")
-        await event.send("\n".join(lines))
+        yield event.plain_result("\n".join(lines))
 
     # ----------------------------------------------------------------- hook
 

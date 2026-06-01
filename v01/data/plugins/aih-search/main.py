@@ -102,7 +102,7 @@ class Main(star.Star):
         if not self._api_key:
             lines.append("缺 API key,请编辑 v01/data/aih-config.json:")
             lines.append('  {"tavily_api_key": "tvly-..."}')
-        await event.send("\n".join(lines))
+        yield event.plain_result("\n".join(lines))
 
     @filter.llm_tool(name="aih_web_search")
     async def aih_web_search(
