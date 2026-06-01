@@ -1,0 +1,8 @@
+name: aih-persona
+desc: ai-helper 人格 ↔ LLM provider 绑定 —— 不动 AstrBot 自家 personas 表,独立映射,生效在 on_agent_begin 钩子里
+version: 0.0.1
+author: Lenssansi
+repo: https://github.com/Lenssansi/ai-helper
+display_name: ai-helper 人格绑定
+astrbot_version: ">=4.0.0"
+short_desc: 让每个人格能锁定专属 LLM provider,对话时自动切换
