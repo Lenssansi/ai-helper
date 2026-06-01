@@ -1,0 +1,41 @@
+{
+  "mihomo": {
+    "description": "Mihomo 内核",
+    "hint": "VPN 内核位置和测试参数。",
+    "type": "object",
+    "items": {
+      "mihomo_dir_override": {
+        "description": "mihomo 目录路径覆盖",
+        "hint": "留空 = 自动定位(dev 用 D:\\ai-helper\\mihomo,packed 模式自动从 install 取)。需要换位置时填绝对路径,目录里要有 mihomo.exe。",
+        "type": "string",
+        "default": ""
+      },
+      "test_timeout_sec": {
+        "description": "节点 TCP 测速超时 (秒)",
+        "hint": "/aih-vpn-test 单节点最长等待。慢机场调高到 8。",
+        "type": "int",
+        "default": 4
+      },
+      "test_concurrency": {
+        "description": "节点测速并发数",
+        "hint": "同时并发探测的节点数。32 节点机场 16 并发约 4s 出结果。",
+        "type": "int",
+        "default": 16
+      }
+    }
+  },
+  "subscriptions": {
+    "description": "订阅",
+    "hint": "动态管理建议用 /aih-vpn-sub-add 命令。这里只用作启动时一次性批量导入。",
+    "type": "object",
+    "items": {
+      "auto_import_urls": {
+        "description": "启动时自动导入的订阅 URL 列表",
+        "hint": "每行一个订阅 URL。重启后如已存在同 URL 则跳过。导入失败(网络问题)只 log warning,不影响启动。",
+        "type": "list",
+        "items": {"type": "string"},
+        "default": []
+      }
+    }
+  }
+}

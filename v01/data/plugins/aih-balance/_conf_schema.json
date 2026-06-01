@@ -1,0 +1,39 @@
+{
+  "alerts": {
+    "description": "余额预警",
+    "hint": "/aih-balance 时按以下阈值打 ⚠️ 标记。",
+    "type": "object",
+    "items": {
+      "warn_threshold_cny": {
+        "description": "人民币余额预警线 (元)",
+        "hint": "余额低于此值显示 ⚠️ 余额偏低。",
+        "type": "float",
+        "default": 5.0
+      },
+      "warn_threshold_usd": {
+        "description": "美元余额预警线 ($)",
+        "hint": "余额低于此值显示 ⚠️ 余额偏低。",
+        "type": "float",
+        "default": 1.0
+      },
+      "warn_remaining_ratio": {
+        "description": "剩余比例预警线 (0-1)",
+        "hint": "如 total 已知,剩余比例低于此值显示 ⚠️ 剩 < N%。",
+        "type": "float",
+        "default": 0.1
+      }
+    }
+  },
+  "network": {
+    "description": "网络设置",
+    "type": "object",
+    "items": {
+      "request_timeout_sec": {
+        "description": "查询请求超时 (秒)",
+        "hint": "单次 HTTP 余额查询的超时时间。",
+        "type": "int",
+        "default": 12
+      }
+    }
+  }
+}

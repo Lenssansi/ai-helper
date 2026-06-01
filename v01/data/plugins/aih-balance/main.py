@@ -50,18 +50,32 @@ def _fmt_money(val: float | None, currency: str) -> str:
     return f"{sym}{val:.2f}"
 
 
-def _fmt_warn(remaining: float | None, total: float | None) -> str:
-    """⚠️ 触发条件:余额 < 5 单位 或 剩余率 < 10%。"""
+def _fmt_warn(
+    remaining: float | None,
+    total: float | None,
+    currency: str,
+    warn_cny: float,
+    warn_usd: float,
+    warn_ratio: float,
+) -> str:
+    """⚠️ 触发条件:余额 < 配置阈值 或 剩余率 < 配置比例。"""
     if remaining is None:
         return ""
-    if remaining < 5:
-        return " ⚠️ 余额偏低"
-    if total and total > 0 and remaining / total < 0.1:
-        return " ⚠️ 剩 < 10%"
+    threshold = warn_cny if currency == "CNY" else warn_usd
+    if remaining < threshold:
+        return f" ⚠️ 余额偏低 (< {threshold})"
+    if total and total > 0 and remaining / total < warn_ratio:
+        return f" ⚠️ 剩 < {warn_ratio:.0%}"
     return ""
 
 
-def _fmt_one(pinfo: dict[str, Any], result: dict[str, Any]) -> str:
+def _fmt_one(
+    pinfo: dict[str, Any],
+    result: dict[str, Any],
+    warn_cny: float = 5.0,
+    warn_usd: float = 1.0,
+    warn_ratio: float = 0.1,
+) -> str:
     pid = pinfo["id"]
     host = pinfo.get("api_base") or "(无 api_base)"
     if not result.get("supported"):
@@ -72,7 +86,7 @@ def _fmt_one(pinfo: dict[str, Any], result: dict[str, Any]) -> str:
     remaining = result.get("remaining")
     total = result.get("total")
     used = result.get("used")
-    warn = _fmt_warn(remaining, total)
+    warn = _fmt_warn(remaining, total, cur, warn_cny, warn_usd, warn_ratio)
     line = f"  • {pid:20s} {host}\n      余 {_fmt_money(remaining, cur)}"
     if total is not None:
         line += f" / 总 {_fmt_money(total, cur)}"
@@ -83,10 +97,21 @@ def _fmt_one(pinfo: dict[str, Any], result: dict[str, Any]) -> str:
 
 
 class Main(star.Star):
-    def __init__(self, context: star.Context) -> None:
+    def __init__(self, context: star.Context, config: dict | None = None) -> None:
         self.context = context
+        config = config or {}
+
+        alerts = config.get("alerts") or {}
+        self._warn_cny = float(alerts.get("warn_threshold_cny") or 5.0)
+        self._warn_usd = float(alerts.get("warn_threshold_usd") or 1.0)
+        self._warn_ratio = float(alerts.get("warn_remaining_ratio") or 0.1)
+
+        net = config.get("network") or {}
+        self._timeout = int(net.get("request_timeout_sec") or 12)
+
         logger.info(
-            f"[aih-balance] loaded,支持 host: {', '.join(query.supported_hosts())}"
+            f"[aih-balance] loaded,支持 host: {', '.join(query.supported_hosts())},"
+            f"⚠ 阈值: ¥{self._warn_cny:.1f} / ${self._warn_usd:.2f} / 剩余比 {self._warn_ratio:.0%}"
         )
 
     def _enumerate_providers(self) -> list[dict[str, Any]]:
@@ -155,5 +180,5 @@ class Main(star.Star):
         results.sort(key=_sort_key)
         lines = [f"Provider 余额(共 {len(results)} 个):"]
         for p, r in results:
-            lines.append(_fmt_one(p, r))
+            lines.append(_fmt_one(p, r, self._warn_cny, self._warn_usd, self._warn_ratio))
         yield event.plain_result("\n".join(lines))

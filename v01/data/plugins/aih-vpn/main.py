@@ -58,13 +58,57 @@ def _set_aih_proxy(url: str | None) -> None:
 
 
 class Main(star.Star):
-    def __init__(self, context: star.Context) -> None:
+    def __init__(self, context: star.Context, config: dict | None = None) -> None:
         self.context = context
+        config = config or {}
+
+        # ---- mihomo_dir_override:换 mihomo 位置 ----
+        mihomo_cfg = config.get("mihomo") or {}
+        mihomo_override = (mihomo_cfg.get("mihomo_dir_override") or "").strip()
+        if mihomo_override:
+            os.environ["AIH_MIHOMO_DIR"] = mihomo_override
+            import importlib
+
+            importlib.reload(mihomo)
+
+        # 测速参数
+        self._test_timeout = int(mihomo_cfg.get("test_timeout_sec") or 4)
+        self._test_concurrency = int(mihomo_cfg.get("test_concurrency") or 16)
+
+        # ---- 启动时自动导入订阅 ----
+        auto_urls = (config.get("subscriptions") or {}).get("auto_import_urls") or []
+        if auto_urls:
+            import asyncio
+
+            asyncio.create_task(self._auto_import(auto_urls))
+
         ver = mihomo.core_version()
         if ver:
             logger.info(f"[aih-vpn] mihomo 已就位:{ver}")
         else:
             logger.warning("[aih-vpn] mihomo 未安装,首次用前请 /aih-vpn-install")
+
+    async def _auto_import(self, urls: list[str]) -> None:
+        """启动时尽力导入配置里的订阅 URL。已存在同 URL 跳过,失败只 log。"""
+        import asyncio
+
+        try:
+            existing = subs.list_subs()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[aih-vpn] 自动导入跳过(列订阅失败):{e}")
+            return
+        seen = {(s.get("url") or "").strip() for s in existing if s.get("source") == "url"}
+        for raw in urls:
+            u = (raw or "").strip()
+            if not u or u in seen:
+                continue
+            try:
+                rec = await asyncio.to_thread(subs.add_sub, "auto-import", u, None)
+                logger.info(
+                    f"[aih-vpn] 自动导入订阅:{rec['id']} ({len(rec.get('nodes') or [])} 节点)"
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[aih-vpn] 自动导入 {u[:60]} 失败:{e}")
 
     # ---------------------------------------------------- core
 

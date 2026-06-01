@@ -73,21 +73,38 @@ def _format_results(results: list[dict[str, Any]], query: str) -> str:
 class Main(star.Star):
     """ai-helper 联网搜索插件。"""
 
-    def __init__(self, context: star.Context) -> None:
+    def __init__(self, context: star.Context, config: dict | None = None) -> None:
         self.context = context
-        cfg = _load_aih_config()
-        self._api_key = cfg.get("tavily_api_key", "")
-        # 优先级:config['proxy'] > env AIH_PROXY > 直连
-        self._proxy = cfg.get("proxy") or os.environ.get("AIH_PROXY") or None
+        config = config or {}
+
+        # ---- 主路径:AstrBot dashboard 配置(_conf_schema.json)----
+        tavily_cfg = config.get("tavily") or {}
+        proxy_cfg = config.get("proxy") or {}
+        self._api_key = (tavily_cfg.get("api_key") or "").strip()
+        self._proxy_override = (proxy_cfg.get("proxy_override") or "").strip()
+        self._max_results_default = int(tavily_cfg.get("max_results") or 7)
+        self._search_depth = tavily_cfg.get("search_depth") or "basic"
+
+        # ---- Fallback:老 aih-config.json(向下兼容)----
+        if not self._api_key or not self._proxy_override:
+            old = _load_aih_config()
+            if not self._api_key:
+                self._api_key = (old.get("tavily_api_key") or "").strip()
+            if not self._proxy_override:
+                self._proxy_override = (old.get("proxy") or "").strip()
+
+        # 运行时 proxy:override > AIH_PROXY env > 直连
+        self._proxy = self._proxy_override or None
+
         if not self._api_key:
             logger.warning(
-                "[aih-search] tavily_api_key 未配置,/aih-search-check 可见提示;"
-                "请在 v01/data/aih-config.json 填 tavily_api_key 字段"
+                "[aih-search] tavily_api_key 未配置;请在 dashboard → 插件 → "
+                "ai-helper 联网搜索 → 配置 里填,或 v01/data/aih-config.json"
             )
         else:
-            # 不打印 key 片段,避免截屏/日志意外外泄
             logger.info(
-                f"[aih-search] 已配置 API key,proxy={self._proxy or '直连'}"
+                f"[aih-search] 已配置 API key,depth={self._search_depth},"
+                f"max={self._max_results_default},proxy={self._proxy or '环境变量/直连'}"
             )
 
     @filter.command("aih-search-check")
@@ -126,13 +143,13 @@ class Main(star.Star):
         try:
             max_results = max(1, min(10, int(max_results)))
         except (TypeError, ValueError):
-            max_results = 7
+            max_results = self._max_results_default
 
         payload = {
             "api_key": self._api_key,
             "query": query,
             "max_results": max_results,
-            "search_depth": "basic",
+            "search_depth": self._search_depth,
         }
         # 每次重读 proxy:VPN 状态变化后无需重启 AstrBot
         proxy_now = self._proxy or os.environ.get("AIH_PROXY") or None

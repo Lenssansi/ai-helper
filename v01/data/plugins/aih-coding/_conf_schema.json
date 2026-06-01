@@ -1,0 +1,60 @@
+{
+  "workspace": {
+    "description": "工作目录授权",
+    "hint": "LLM 编程工具 (aih_read_file / aih_write_file / aih_bash / aih_search_text) 只能在以下根目录内读写。也可在 WebChat 用 /aih-coding-allow 加。",
+    "type": "object",
+    "items": {
+      "auto_allow_roots": {
+        "description": "启动时自动加白名单的根目录列表",
+        "hint": "每行填一个绝对路径(必须已存在),如 D:\\project。重启时若不在白名单则自动加。",
+        "type": "list",
+        "items": {"type": "string"},
+        "default": []
+      }
+    }
+  },
+  "skills": {
+    "description": "Skills 仓库",
+    "hint": "grill-with-docs 等 skill 的源目录。",
+    "type": "object",
+    "items": {
+      "skills_dir_override": {
+        "description": "Skills 目录路径覆盖",
+        "hint": "留空 = 自动定位(dev 用 D:\\ai-helper\\skills,packed 模式自动从 install 取)。需要换位置时再填绝对路径。",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
+  "limits": {
+    "description": "安全限制",
+    "hint": "防 LLM 误操作或对抗注入,这些上限是默认的硬保护。",
+    "type": "object",
+    "items": {
+      "max_write_mb": {
+        "description": "单文件写入上限 (MB)",
+        "hint": "aih_write_file 单次最大写入字节数 = 此值 × 1024 × 1024。超过会拒绝。",
+        "type": "int",
+        "default": 10
+      },
+      "cmd_timeout_sec": {
+        "description": "shell 命令超时 (秒)",
+        "hint": "aih_bash 单次命令最大执行时间。超时直接 kill。120s 适合大多数编译/测试任务。",
+        "type": "int",
+        "default": 120
+      },
+      "walk_max_depth": {
+        "description": "递归搜索最大深度",
+        "hint": "aih_search_text 遍历目录的最大深度,防扫到 .venv / node_modules 等大量小文件。",
+        "type": "int",
+        "default": 15
+      },
+      "walk_max_files": {
+        "description": "递归搜索最大文件数",
+        "hint": "aih_search_text 单次扫描的文件总数上限。",
+        "type": "int",
+        "default": 10000
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "tavily": {
+    "description": "Tavily 联网搜索",
+    "hint": "ai-helper 自家联网搜索 LLM 工具 (aih_web_search) 的后端配置。Tavily 在 https://tavily.com 注册免费 key。",
+    "type": "object",
+    "items": {
+      "api_key": {
+        "description": "Tavily API Key",
+        "hint": "Tavily 官网注册后获取。保存后插件下次启动生效。",
+        "type": "string",
+        "default": ""
+      },
+      "max_results": {
+        "description": "默认最大结果数",
+        "hint": "1-10 之间。LLM 调用时可在 max_results 参数里覆盖此默认。",
+        "type": "int",
+        "default": 7
+      },
+      "search_depth": {
+        "description": "搜索深度",
+        "hint": "basic = 快、扣额度少(免费足够);advanced = 慢、深、扣更多。",
+        "type": "string",
+        "options": ["basic", "advanced"],
+        "default": "basic"
+      }
+    }
+  },
+  "proxy": {
+    "description": "代理设置",
+    "hint": "国内访问 Tavily 通常需要代理。默认走 AIH_PROXY 环境变量(由 aih-vpn 在 /aih-vpn-use 时自动注入)。",
+    "type": "object",
+    "items": {
+      "proxy_override": {
+        "description": "代理 URL 强制覆盖",
+        "hint": "留空 = 走 AIH_PROXY 环境变量(推荐,跟 aih-vpn 联动)。手动填如 http://127.0.0.1:7890 则强制走该代理,不读环境变量。",
+        "type": "string",
+        "default": ""
+      }
+    }
+  }
+}

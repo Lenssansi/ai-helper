@@ -71,12 +71,44 @@ def _resolve_safe(path: str) -> Path:
 
 
 class Main(star.Star):
-    def __init__(self, context: star.Context) -> None:
+    def __init__(self, context: star.Context, config: dict | None = None) -> None:
         self.context = context
+        config = config or {}
+
+        # ---- workspace.auto_allow_roots:启动时自动加白名单 ----
+        ws_cfg = config.get("workspace") or {}
+        for root in (ws_cfg.get("auto_allow_roots") or []):
+            root = (root or "").strip()
+            if root:
+                workspace.add_root(root)  # 已在就静默 noop
+
+        # ---- skills_dir_override:覆盖 skills 仓位置 ----
+        skills_override = (
+            (config.get("skills") or {}).get("skills_dir_override") or ""
+        ).strip()
+        if skills_override:
+            os.environ["AIH_SKILLS_DIR"] = skills_override
+            import importlib
+
+            importlib.reload(skills)
+
+        # ---- limits:覆盖 LLM 工具的安全阈值 ----
+        limits = config.get("limits") or {}
+        global MAX_WRITE, CMD_TIMEOUT, WALK_MAX_DEPTH, WALK_MAX_FILES
+        if limits.get("max_write_mb"):
+            MAX_WRITE = int(limits["max_write_mb"]) * 1024 * 1024
+        if limits.get("cmd_timeout_sec"):
+            CMD_TIMEOUT = int(limits["cmd_timeout_sec"])
+        if limits.get("walk_max_depth"):
+            WALK_MAX_DEPTH = int(limits["walk_max_depth"])
+        if limits.get("walk_max_files"):
+            WALK_MAX_FILES = int(limits["walk_max_files"])
+
         roots = workspace.get_roots()
         sks = skills.list_available()
         logger.info(
             f"[aih-coding] {len(roots)} 个授权根目录,{len(sks)} 个可用 skills"
+            f",max_write={MAX_WRITE // 1024 // 1024}MB,cmd_timeout={CMD_TIMEOUT}s"
         )
 
     # ============ slash 命令(给作者看/管的)============
