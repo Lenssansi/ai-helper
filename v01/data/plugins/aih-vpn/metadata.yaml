@@ -1,0 +1,8 @@
+name: aih-vpn
+desc: ai-helper VPN (mihomo) —— 内核安装/订阅管理/节点测速/按需启停。LLM 工具走的代理也是这条出口
+version: 0.0.1
+author: Lenssansi
+repo: https://github.com/Lenssansi/Ai-helper
+display_name: ai-helper VPN
+astrbot_version: ">=4.0.0"
+short_desc: 用本机 mihomo 给 ai-helper 自家功能(如 aih-search)提供出墙能力
