@@ -12,6 +12,8 @@
   "build": {
     "appId": "com.aihelper.app",
     "productName": "ai-helper",
+    "electronVersion": "33.3.1",
+    "electronDist": "../../app/node_modules/electron/dist",
     "directories": {
       "output": "../../release/v${version}"
     },
