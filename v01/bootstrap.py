@@ -46,6 +46,50 @@ print(f"[ai-helper-v01] DASHBOARD_HOST = {os.environ['DASHBOARD_HOST']}")
 print(f"[ai-helper-v01] Python        = {sys.version.split()[0]}")
 
 
+async def ensure_dashboard() -> None:
+    """确保 dashboard 静态资源就位。
+
+    AstrBot wheel 不打包 dashboard/dist,首次启动需要下载。
+    官方 CLI 用 click.confirm 交互式询问,本进程是无人值守的 Electron 子进程,
+    所以这里直接调底层 download_dashboard,跳过交互。
+
+    幂等:dist/index.html 存在就直接跳过,不重复下载。
+    """
+    dist_index = HERE / "data" / "dist" / "index.html"
+    if dist_index.exists():
+        print(f"[ai-helper-v01] Dashboard already installed at {dist_index.parent}")
+        return
+
+    from astrbot.core.config.default import VERSION
+    from astrbot.core.utils.io import download_dashboard
+
+    print(f"[ai-helper-v01] Dashboard 缺失,首次下载 v{VERSION}…")
+    zip_path = HERE / "data" / "dashboard.zip"
+    try:
+        await download_dashboard(
+            path=str(zip_path),
+            extract_path=str(HERE / "data"),
+            version=f"v{VERSION}",
+            latest=False,
+        )
+    except Exception as e:
+        print(f"[ai-helper-v01] Dashboard 下载失败:{e}")
+        print(f"[ai-helper-v01] 可手动从 https://github.com/AstrBotDevs/AstrBot/releases")
+        print(f"[ai-helper-v01] 下载 AstrBot-v{VERSION}-dashboard.zip,解压到 {HERE / 'data'}/")
+        raise
+
+    # 下完清掉 zip,省 30+MB 空间
+    try:
+        zip_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    if dist_index.exists():
+        print(f"[ai-helper-v01] Dashboard 安装完成 -> {dist_index.parent}")
+    else:
+        print(f"[ai-helper-v01] 警告:下载完成但 {dist_index} 仍不存在,zip 结构异常?")
+
+
 async def main() -> None:
     """启 AstrBot 核心 + Dashboard,跑到 Ctrl+C / 外部 kill。"""
     from astrbot.core import LogBroker, LogManager, db_helper, logger
@@ -53,6 +97,10 @@ async def main() -> None:
 
     log_broker = LogBroker()
     LogManager.set_queue_handler(logger, log_broker)
+
+    # InitialLoader.start() 之前先备好 dashboard 静态文件,否则 6185 端口
+    # 会返回 404(因为 wheel 不打包 dist,需要从 soulter CDN 拉)
+    await ensure_dashboard()
 
     loader = InitialLoader(db_helper, log_broker)
     print("[ai-helper-v01] Starting AstrBot…")
