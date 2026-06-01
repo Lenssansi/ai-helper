@@ -17,7 +17,7 @@ slash commands:
   /aih-persona-unbind PID —— 解除绑定
   /aih-persona-check      —— 自检(报当前会话人格 + 应切的 provider)
 
-米花菌后续亲自配:在 WebChat 输 `/aih-persona-list` 看现状,再 bind。
+作者后续亲自配:在 WebChat 输 `/aih-persona-list` 看现状,再 bind。
 """
 
 from __future__ import annotations

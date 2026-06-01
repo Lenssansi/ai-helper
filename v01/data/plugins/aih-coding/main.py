@@ -8,7 +8,7 @@
   aih_bash(cmd, cwd?)                跑 shell(cwd 必须在白名单内)
   aih_search_text(query, path)       目录内搜文本
 
-slash 命令(对米花菌):
+slash 命令(对作者):
   /aih-coding-allow <绝对路径>       授权根目录加白名单
   /aih-coding-roots                  看现有白名单
   /aih-coding-revoke <绝对路径>      撤销授权
@@ -76,7 +76,7 @@ class Main(star.Star):
             f"[aih-coding] {len(roots)} 个授权根目录,{len(sks)} 个可用 skills"
         )
 
-    # ============ slash 命令(给米花菌看/管的)============
+    # ============ slash 命令(给作者看/管的)============
 
     @filter.command("aih-coding-allow")
     async def cmd_allow(self, event: AstrMessageEvent, path: str = ""):
@@ -121,7 +121,7 @@ class Main(star.Star):
         if not items:
             yield event.plain_result(
                 "没找到任何 skill。检查 D:\\ai-helper\\skills 目录是否克隆了"
-                " 米花菌的 skills 仓库。"
+                " 作者的 skills 仓库。"
             )
             return
         lines = [f"可用 skills({len(items)} 个):"]

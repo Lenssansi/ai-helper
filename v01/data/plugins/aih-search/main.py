@@ -91,7 +91,7 @@ class Main(star.Star):
 
     @filter.command("aih-search-check")
     async def search_check(self, event: AstrMessageEvent) -> None:
-        """诊断:确认搜索插件配置情况(给米花菌用,不是给 LLM)。"""
+        """诊断:确认搜索插件配置情况(给作者用,不是给 LLM)。"""
         lines = ["aih-search 配置自检:"]
         lines.append(
             f"  API key:      {'已配置(' + self._api_key[:8] + '...)' if self._api_key else '❌ 未配置'}"

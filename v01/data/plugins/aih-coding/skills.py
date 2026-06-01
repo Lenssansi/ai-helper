@@ -1,6 +1,6 @@
 """skills 加载器 —— 按名字找 SKILL.md,把内容做成 LLM 的 system prompt 增强。
 
-米花菌的 skills 仓库克隆到了 D:\\ai-helper\\skills\\,里面是这种结构:
+作者的 skills 仓库克隆到了 D:\\ai-helper\\skills\\,里面是这种结构:
   skills/
     skills/
       engineering/
