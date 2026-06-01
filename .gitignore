@@ -70,3 +70,12 @@ Thumbs.db
 
 # 注：assets/ 下的 robot.png / icon.ico / 夏莱.png 是程序图标资源，
 # 体积小且程序需要，保留上传，不在忽略之列。
+
+# v0.1.x �ع��ڼ�ı��ع���/Python/����/��������,�����ֿ�
+backup-v*/
+v01/.tools/
+v01/.venv/
+v01/data/
+
+# 本地图标素材包,与代码无关
+icos/
