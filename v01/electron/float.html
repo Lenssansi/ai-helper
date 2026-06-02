@@ -68,15 +68,16 @@
 
       // 跳到 /chatbox:在页面内持续重试(等 SPA 挂载),history/hash 两种模式都试。
       // 一旦 URL 落到 chatbox 就停。注入脚本自带 interval,不依赖外部计时。
+      // 路由是 hash 模式(真正生效的是 #/xxx)。持续把 hash 设成 #/chatbox,
+      // 直到命中为止;命中后停。
       function goChat() {
         try {
           wv.executeJavaScript(
             "(function(){if(window.__aihNav)return;window.__aihNav=1;var n=0;" +
             "var t=setInterval(function(){n++;" +
-            "if(location.pathname.indexOf('/chatbox')===0||location.hash.indexOf('/chatbox')>=0){clearInterval(t);return;}" +
-            "try{history.pushState({},'','/chatbox');window.dispatchEvent(new PopStateEvent('popstate'));}catch(e){}" +
-            "if(location.pathname.indexOf('/chatbox')!==0&&n>=4){try{location.hash='#/chatbox';}catch(e){}}" +
-            "if(n>40)clearInterval(t);},350);})();"
+            "if(location.hash.indexOf('chatbox')>=0){clearInterval(t);return;}" +
+            "try{location.hash='#/chatbox';}catch(e){}" +
+            "if(n>40)clearInterval(t);},300);})();"
           ).catch(function () {});
         } catch (e) {}
       }
@@ -107,10 +108,7 @@
       }
       wv.addEventListener("did-navigate", showPath);
       wv.addEventListener("did-navigate-in-page", showPath);
-      wv.addEventListener("dom-ready", function () {
-        showPath();
-        try { wv.openDevTools(); } catch (e) {}
-      });
+      wv.addEventListener("dom-ready", showPath);
       wv.addEventListener("did-fail-load", function (e) {
         if (e.errorCode === -3) return;
         load.style.display = "flex";
