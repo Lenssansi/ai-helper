@@ -7,11 +7,16 @@
       html, body {
         margin: 0;
         height: 100%;
-        background: #0f1115;
-        color: #e7e9ee;
+        background: #ffffff;
+        color: #1f2329;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
           "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
       }
+      /* 亮色滚动条,与 AstrBot 默认浅色主题一致 */
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-track { background: #f1f2f4; }
+      ::-webkit-scrollbar-thumb { background: #c9ccd1; border-radius: 6px; }
+      ::-webkit-scrollbar-thumb:hover { background: #b0b4ba; }
       .wrap {
         height: 100%;
         display: flex;
@@ -20,14 +25,10 @@
         justify-content: center;
         gap: 22px;
       }
-      .title {
-        font-size: 18px;
-        letter-spacing: 1px;
-        opacity: 0.92;
-      }
+      .title { font-size: 18px; letter-spacing: 1px; color: #1f2329; }
       .hint {
         font-size: 12.5px;
-        opacity: 0.55;
+        color: #8a9099;
         max-width: 360px;
         text-align: center;
         line-height: 1.6;
@@ -35,14 +36,12 @@
       .ring {
         width: 38px;
         height: 38px;
-        border: 3px solid rgba(255, 255, 255, 0.12);
-        border-top-color: #6aa9ff;
+        border: 3px solid #e6e8eb;
+        border-top-color: #3b82f6;
         border-radius: 50%;
         animation: spin 0.9s linear infinite;
       }
-      @keyframes spin {
-        to { transform: rotate(360deg); }
-      }
+      @keyframes spin { to { transform: rotate(360deg); } }
     </style>
   </head>
   <body>
@@ -50,7 +49,7 @@
       <div class="ring"></div>
       <div class="title">ai-helper 正在启动…</div>
       <div class="hint">
-        首次启动需要拉 dashboard 静态资源(约 10 MB),之后启动会快得多。
+        首次启动需要拉 dashboard 静态资源(约 10 MB),之后会快很多。
       </div>
     </div>
   </body>

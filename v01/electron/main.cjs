@@ -36,8 +36,11 @@ const LOADING_HTML = path.join(__dirname, "loading.html");
 // 浮窗默认竖屏尺寸(每次程序启动重置回这个)
 const FLOAT_W = 400;
 const FLOAT_H = 720;
-// 浮窗启动后客户端跳转到的路由(直达聊天)
-const FLOAT_ROUTE = "/chat";
+// 浮窗启动后客户端跳转到的路由 —— /chatbox 是 AstrBot 自带的 BlankLayout
+// 独立聊天页(无侧边栏),正好当便捷对话框;/chat 是带侧边栏的完整页。
+const FLOAT_ROUTE = "/chatbox";
+// 窗口浅色背景(与 AstrBot 默认浅色主题一致,避免加载时闪暗底)
+const BG_LIGHT = "#ffffff";
 
 let astrbotProc = null;
 let mainWin = null;
@@ -45,6 +48,7 @@ let floatWin = null;
 let tray = null;
 let isQuitting = false; // 仅当托盘"退出"或 before-quit 时为 true
 let backendReady = false;
+let floatOnTop = true; // 浮窗是否置顶(托盘可切换)
 
 function isFloatLaunch(argv) {
   return (argv || []).some((a) => a === "--float" || a === "/float");
@@ -149,14 +153,21 @@ function loadDashboard(win, toChat) {
   if (!win || win.isDestroyed()) return;
   win.loadURL(DASHBOARD_URL);
   if (toChat) {
+    // SPA 是 history 模式、服务端无 fallback,所以不能直接 loadURL(/chatbox)(会 404)。
+    // 先加载根、等 Vue 应用挂载后,用 pushState+popstate 客户端跳到 /chatbox。
+    // 挂载时机不定,所以延时重试两次。
     win.webContents.once("did-finish-load", () => {
       win.webContents
         .executeJavaScript(
-          `(function(){try{` +
-            `if(!/\\/chat/.test(location.pathname)){` +
-            `history.pushState({},'',${JSON.stringify(FLOAT_ROUTE)});` +
+          `(function(){` +
+            `var dst=${JSON.stringify(FLOAT_ROUTE)};` +
+            `function go(){try{` +
+            `if(location.pathname.indexOf(dst)!==0){` +
+            `history.pushState({},'',dst);` +
             `window.dispatchEvent(new PopStateEvent('popstate'));}` +
-            `}catch(e){}})();`,
+            `}catch(e){}}` +
+            `setTimeout(go,400);setTimeout(go,1200);` +
+            `})();`,
         )
         .catch(() => {});
     });
@@ -180,7 +191,7 @@ function createMainWindow() {
     minHeight: 720,
     title: "ai-helper",
     icon: fs.existsSync(ICON) ? ICON : undefined,
-    backgroundColor: "#0f1115",
+    backgroundColor: BG_LIGHT,
     show: false,
     webPreferences: commonWebPrefs(),
   });
@@ -203,14 +214,14 @@ function createFloatWindow() {
     minHeight: 420,
     title: "ai-helper",
     icon: fs.existsSync(ICON) ? ICON : undefined,
-    backgroundColor: "#0f1115",
+    backgroundColor: BG_LIGHT,
     show: false,
     resizable: true, // 可自己拉宽/拉高
-    alwaysOnTop: true, // 置顶
+    alwaysOnTop: floatOnTop, // 置顶(托盘可切换)
     skipTaskbar: true, // 浮窗是小挂件,不占任务栏;由托盘管理
     webPreferences: commonWebPrefs(),
   });
-  floatWin.setAlwaysOnTop(true, "floating");
+  floatWin.setAlwaysOnTop(floatOnTop, "floating");
   floatWin.removeMenu();
   hardenSecurity(floatWin);
   attachCloseToTray(floatWin);
@@ -235,7 +246,7 @@ function showFloat() {
   if (!floatWin || floatWin.isDestroyed()) createFloatWindow();
   else {
     floatWin.show();
-    floatWin.setAlwaysOnTop(true, "floating");
+    floatWin.setAlwaysOnTop(floatOnTop, "floating");
     floatWin.focus();
   }
 }
@@ -252,10 +263,29 @@ function buildTray() {
     return;
   }
   tray.setToolTip("ai-helper");
+  refreshTrayMenu();
+  tray.on("double-click", () => showMain());
+}
+
+// 托盘菜单(含"浮窗置顶"勾选项,切换后重建以刷新勾选状态)
+function refreshTrayMenu() {
+  if (!tray) return;
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "显示程序主界面", click: () => showMain() },
       { label: "显示浮窗", click: () => showFloat() },
+      {
+        label: "浮窗置顶",
+        type: "checkbox",
+        checked: floatOnTop,
+        click: () => {
+          floatOnTop = !floatOnTop;
+          if (floatWin && !floatWin.isDestroyed()) {
+            floatWin.setAlwaysOnTop(floatOnTop, "floating");
+          }
+          refreshTrayMenu();
+        },
+      },
       { type: "separator" },
       {
         label: "退出 ai-helper",
@@ -266,7 +296,6 @@ function buildTray() {
       },
     ]),
   );
-  tray.on("double-click", () => showMain());
 }
 
 function showFatalHtml(html) {
