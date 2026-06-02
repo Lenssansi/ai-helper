@@ -139,6 +139,20 @@ class Main(star.Star):
         else:
             logger.warning("[aih-vpn] mihomo 未安装,首次用前请 /aih-vpn-install")
 
+    async def terminate(self) -> None:
+        """AstrBot 卸载/重载/优雅关闭本插件时调用:清掉所有 mihomo 实例。
+
+        注意:Electron 关程序时是 taskkill /T 树杀 python,本钩子来不及跑——
+        那条路径靠树杀兜底。这个钩子主要保证「插件重载 / AstrBot 优雅退出」
+        时不残留 mihomo 孤儿。两条路径双保险。
+        """
+        try:
+            n = mihomo.shutdown_all()
+            if n:
+                logger.info(f"[aih-vpn] terminate:已关闭 {n} 个 mihomo 实例")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[aih-vpn] terminate 清理失败:{e}")
+
     async def _auto_import(self, urls: list[str]) -> None:
         """启动时尽力导入配置里的订阅 URL。已存在同 URL 跳过,失败只 log。"""
         import asyncio

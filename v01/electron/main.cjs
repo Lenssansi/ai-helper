@@ -18,7 +18,7 @@ const { app, BrowserWindow, shell } = require("electron");
 const path = require("path");
 const http = require("http");
 const fs = require("fs");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 
 const PACKED = app.isPackaged;
 // dev:   __dirname = D:\ai-helper\v01\electron\
@@ -89,11 +89,20 @@ async function ensureAstrbot() {
 
 function killOurs() {
   if (!astrbotProc) return;
+  const pid = astrbotProc.pid;
   try {
-    // Windows 没有真正的 SIGTERM,kill() 实际发的是 TerminateProcess
-    // bootstrap.py 已捕获 KeyboardInterrupt,但 TerminateProcess 不走 Python signal
-    // → AstrBot 不会优雅退;data_v4.db 是 WAL 模式,断电级 crash 也安全。可接受。
-    astrbotProc.kill();
+    if (process.platform === "win32" && pid) {
+      // 关键:树杀(/T)。python(AstrBot)自己会拉起 mihomo 等子进程,
+      // 单纯 astrbotProc.kill() 只杀 python → mihomo 变孤儿残留在后台。
+      // taskkill /T 连子孙进程一起终止,保证"随程序关闭而关闭"。
+      // /F 强制;windowsHide 避免闪一个 cmd 窗。
+      spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } else {
+      astrbotProc.kill();
+    }
   } catch {
     /* ignore */
   }
