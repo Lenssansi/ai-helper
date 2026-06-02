@@ -66,13 +66,17 @@
       const load = document.getElementById("load");
       const pin = document.getElementById("pin");
 
-      // 跳到 AstrBot 自带纯聊天页 /chatbox(BlankLayout)
+      // 跳到 /chatbox:在页面内持续重试(等 SPA 挂载),history/hash 两种模式都试。
+      // 一旦 URL 落到 chatbox 就停。注入脚本自带 interval,不依赖外部计时。
       function goChat() {
         try {
           wv.executeJavaScript(
-            "(function(){try{if(location.pathname.indexOf('/chatbox')!==0){" +
-            "history.pushState({},'','/chatbox');" +
-            "window.dispatchEvent(new PopStateEvent('popstate'));}}catch(e){}})();"
+            "(function(){if(window.__aihNav)return;window.__aihNav=1;var n=0;" +
+            "var t=setInterval(function(){n++;" +
+            "if(location.pathname.indexOf('/chatbox')===0||location.hash.indexOf('/chatbox')>=0){clearInterval(t);return;}" +
+            "try{history.pushState({},'','/chatbox');window.dispatchEvent(new PopStateEvent('popstate'));}catch(e){}" +
+            "if(location.pathname.indexOf('/chatbox')!==0&&n>=4){try{location.hash='#/chatbox';}catch(e){}}" +
+            "if(n>40)clearInterval(t);},350);})();"
           ).catch(function () {});
         } catch (e) {}
       }
@@ -90,8 +94,7 @@
       wv.addEventListener("did-finish-load", function () {
         load.style.display = "none";
         purify();
-        setTimeout(goChat, 300);
-        setTimeout(function () { goChat(); purify(); }, 1000);
+        goChat();
       });
       wv.addEventListener("did-fail-load", function (e) {
         if (e.errorCode === -3) return;
