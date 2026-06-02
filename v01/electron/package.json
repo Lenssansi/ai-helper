@@ -21,6 +21,8 @@
       "main.cjs",
       "preload.cjs",
       "loading.html",
+      "float.html",
+      "float-preload.cjs",
       "package.json"
     ],
     "asar": true,

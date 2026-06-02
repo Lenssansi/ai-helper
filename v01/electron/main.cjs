@@ -14,7 +14,7 @@
 // 安全:dashboard 绑死 127.0.0.1;contextIsolation;拒绝外站导航;外链走默认浏览器。
 "use strict";
 
-const { app, BrowserWindow, Tray, Menu, shell, nativeImage } = require("electron");
+const { app, BrowserWindow, Tray, Menu, shell, nativeImage, ipcMain } = require("electron");
 const path = require("path");
 const http = require("http");
 const fs = require("fs");
@@ -32,6 +32,7 @@ const ICON = PACKED
   ? path.join(process.resourcesPath, "icon.ico")
   : path.join(ROOT, "assets", "icon.ico");
 const LOADING_HTML = path.join(__dirname, "loading.html");
+const FLOAT_HTML = path.join(__dirname, "float.html"); // 浮窗外壳(自定义标题栏 + webview)
 
 // 浮窗默认竖屏尺寸(每次程序启动重置回这个)
 const FLOAT_W = 400;
@@ -216,19 +217,37 @@ function createFloatWindow() {
     icon: fs.existsSync(ICON) ? ICON : undefined,
     backgroundColor: BG_LIGHT,
     show: false,
-    resizable: true, // 可自己拉宽/拉高
-    alwaysOnTop: floatOnTop, // 置顶(托盘可切换)
-    skipTaskbar: true, // 浮窗是小挂件,不占任务栏;由托盘管理
-    webPreferences: commonWebPrefs(),
+    frame: false, // 无边框:用自定义标题栏(含图钉)
+    resizable: true, // 仍可拖边拉伸
+    alwaysOnTop: floatOnTop,
+    skipTaskbar: true,
+    webPreferences: {
+      preload: path.join(__dirname, "float-preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false, // webviewTag 需要
+      webviewTag: true, // 外壳里用 <webview> 嵌 AstrBot /chatbox
+    },
   });
   floatWin.setAlwaysOnTop(floatOnTop, "floating");
   floatWin.removeMenu();
-  hardenSecurity(floatWin);
+
+  // 外壳安全:外链走默认浏览器;外壳本体不许导航走;内嵌 webview 去 preload+禁 node
+  floatWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) shell.openExternal(url);
+    return { action: "deny" };
+  });
+  floatWin.webContents.on("will-navigate", (e) => e.preventDefault());
+  floatWin.webContents.on("will-attach-webview", (_e, wp) => {
+    delete wp.preload;
+    wp.nodeIntegration = false;
+    wp.contextIsolation = true;
+  });
+
   attachCloseToTray(floatWin);
   floatWin.on("closed", () => (floatWin = null));
 
-  if (backendReady) loadDashboard(floatWin, true);
-  else floatWin.loadFile(LOADING_HTML);
+  floatWin.loadFile(FLOAT_HTML); // 外壳即时加载;webview 自己连后端 + 重试
   floatWin.once("ready-to-show", () => floatWin.show());
   return floatWin;
 }
@@ -305,6 +324,23 @@ function showFatalHtml(html) {
   }
 }
 
+// ---- 浮窗外壳 IPC:图钉置顶 / 最小化 / 关闭 ----
+ipcMain.handle("aih:toggle-pin", () => {
+  floatOnTop = !floatOnTop;
+  if (floatWin && !floatWin.isDestroyed()) {
+    floatWin.setAlwaysOnTop(floatOnTop, "floating");
+  }
+  refreshTrayMenu(); // 同步托盘里那个勾选项
+  return floatOnTop;
+});
+ipcMain.handle("aih:get-pin", () => floatOnTop);
+ipcMain.on("aih:minimize", () => {
+  if (floatWin && !floatWin.isDestroyed()) floatWin.hide();
+});
+ipcMain.on("aih:close", () => {
+  if (floatWin && !floatWin.isDestroyed()) floatWin.hide();
+});
+
 // ---- 单实例锁:防多开抢同一个 6185 后端 ----
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -346,9 +382,8 @@ app.whenReady().then(async () => {
   }
 
   backendReady = true;
-  // 把已经开着的窗口从 loading 切到 dashboard
+  // 主窗口从 loading 切到 dashboard;浮窗外壳自带 webview 会自己连后端,无需处理
   if (mainWin && !mainWin.isDestroyed()) loadDashboard(mainWin, false);
-  if (floatWin && !floatWin.isDestroyed()) loadDashboard(floatWin, true);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) showMain();
