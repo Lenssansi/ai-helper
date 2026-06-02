@@ -96,6 +96,21 @@
         purify();
         goChat();
       });
+
+      // —— 临时诊断:把 webview 当前路径显示在标题栏,并打开 DevTools 看报错 ——
+      const titleEl = document.querySelector("#bar .title");
+      function showPath() {
+        try {
+          const u = new URL(wv.getURL());
+          titleEl.textContent = "ai-helper  " + (u.pathname + u.hash);
+        } catch (e) {}
+      }
+      wv.addEventListener("did-navigate", showPath);
+      wv.addEventListener("did-navigate-in-page", showPath);
+      wv.addEventListener("dom-ready", function () {
+        showPath();
+        try { wv.openDevTools(); } catch (e) {}
+      });
       wv.addEventListener("did-fail-load", function (e) {
         if (e.errorCode === -3) return;
         load.style.display = "flex";
